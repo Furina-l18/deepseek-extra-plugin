@@ -86,7 +86,7 @@ AstrBot 插件。全部推理在本机 Ollama 上完成，对话内容不会发�
 | 网络 | 仅拉模型时需要 | 运行期完全离线 |
 | 会话数据库 | `astrbot_plugin_livingmemory` 的 `conversations.db` | **可选**；缺失时每日情感总结会跳过，其余功能正常 |
 
-> 模型名被硬编码为 `deepseek-r1:8b`，配置里的 `model` 字段会被忽略并在日志中提示。这是为了避免小模型在结构化输出上不稳定。
+> 模型默认 `deepseek-r1:8b`，可在配置项 `model` 中更换，但必须是已经在 Ollama 里 pull 过的模型。小于 8B 的模型在结构化输出上容易失败，插件会退回到关键词兜底。
 
 ---
 
@@ -142,6 +142,8 @@ WebUI 插件配置页可改，全部有默认值。
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `enable` | true | 总开关 |
+| `model` | `deepseek-r1:8b` | 推理模型，需已在 Ollama 中 pull |
+| `ollama_url` | `http://127.0.0.1:11434` | 本地推理地址 |
 | `inject_prompt` | true | 注入情绪卡片 |
 | `tick_minutes` | 5 | 激素演化间隔 |
 | `daily_run_at` | 23:40 | 每日情感总结时间（须早于 0 点） |

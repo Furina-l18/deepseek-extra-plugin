@@ -65,7 +65,7 @@ except ImportError:  # 单独测试
     from profiles import ProfileStore  # type: ignore
 
 DEFAULT_MODEL = "deepseek-r1:8b"
-CODE_VERSION = "1.4.1"
+CODE_VERSION = "1.5.0"
 DEFAULT_DAILY_AT = "23:40"
 DEFAULT_COMFORT_EMOTIONS = "害怕,低落,委屈,焦虑,孤独"
 FAST_PROVIDER_DEFAULT = "deepseek/deepseek-flash"
@@ -177,7 +177,7 @@ def _parse_hhmm(text: str) -> tuple[int, int]:
     "affect_core",
     "Furina-l18",
     "激素 / 情绪 / 情感 / 能量 四层合一：神经内分泌驱动情绪与能量，情感按人独立并汇总成共享内分泌基线",
-    "1.4.1",
+    "1.5.0",
 )
 class AffectCore(Star):
     def __init__(self, context: Context, config=None):
@@ -246,11 +246,7 @@ class AffectCore(Star):
 
             self.ollama_url = str(cfg.get("ollama_url") or "http://127.0.0.1:11434")
             configured = str(cfg.get("model") or "").strip()
-            if configured and configured != DEFAULT_MODEL:
-                logger.info(
-                    f"[affect_core] 推理模型固定为 {DEFAULT_MODEL}，忽略配置 {configured!r}"
-                )
-            self.model = DEFAULT_MODEL
+            self.model = configured or DEFAULT_MODEL
             self.lookback = max(10, int(cfg.get("lookback_messages", 200)))
             self.min_messages = max(1, int(cfg.get("min_messages", 8)))
             self.auto_summary = bool(cfg.get("auto_summary", True))
@@ -550,8 +546,11 @@ class AffectCore(Star):
             names = await asyncio.to_thread(analyzer.list_models, self.ollama_url, 5.0)
         except Exception:  # noqa: BLE001
             return
-        if names and DEFAULT_MODEL not in names:
-            logger.error(f"[affect_core] Ollama 里没有 {DEFAULT_MODEL}，请先 pull")
+        if names and self.model not in names:
+            logger.warning(
+                f"[affect_core] Ollama 里没有模型 {self.model}，请先执行："
+                f"ollama pull {self.model}"
+            )
 
     async def _scheduler(self) -> None:
         """单循环调度：按 tick 推进激素/情绪/能量，顺带检查每日情感总结。

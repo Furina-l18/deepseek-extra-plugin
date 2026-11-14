@@ -29,6 +29,12 @@
     "default": 5,
     "hint": "插件页面每隔多久重新拉一次数据。"
   },
+  "model": {
+    "description": "推理模型",
+    "type": "string",
+    "default": "deepseek-r1:8b",
+    "hint": "必须已在 Ollama 中 pull。小模型在结构化输出上容易失败，建议 8B 及以上；更换后重启或重载插件生效。"
+  },
   "ollama_url": {
     "description": "本地算力地址",
     "type": "string",
