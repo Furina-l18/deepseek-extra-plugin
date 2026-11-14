@@ -1,0 +1,7 @@
+# 本插件只依赖 AstrBot 宿主提供的 API 与 Python 标准库。
+# 运行主机需要：
+#   - Python 3.10+
+#   - AstrBot >= 4.29.0, < 5
+#   - 本地 Ollama（拉取 deepseek-r1:8b）
+#
+# 因此这里不声明第三方依赖。

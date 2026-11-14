@@ -1,0 +1,38 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- AstrBot 运行时数据 ----
+# 插件运行后会生成这些，绝对不能提交
+data/
+plugin_data/
+pages/affect/data.json
+*.log
+logs/
+
+# ---- 本地配置与备份 ----
+.env
+*.local
+*.bak
+*.tmp
+*.swp
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

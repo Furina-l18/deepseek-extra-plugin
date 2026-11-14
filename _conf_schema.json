@@ -1,0 +1,308 @@
+{
+  "enable": {
+    "description": "启用影响核心",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后不计算激素/情绪/能量，也不注入提示词。"
+  },
+  "inject_prompt": {
+    "description": "把当前状态注入系统提示词",
+    "type": "bool",
+    "default": true,
+    "hint": "每次请求追加心情、八维、能量、对当前对象的情感。"
+  },
+  "enable_commands": {
+    "description": "启用查询命令",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后 /心情 /激素 /能量 /情感 不响应，但内部照常运行。"
+  },
+  "tick_minutes": {
+    "description": "激素演化间隔（分钟）",
+    "type": "int",
+    "default": 5,
+    "hint": "按这个周期推进激素、重算情绪与能量，并检查是否需要求安慰。"
+  },
+  "page_refresh_minutes": {
+    "description": "页面刷新间隔（分钟）",
+    "type": "int",
+    "default": 5,
+    "hint": "插件页面每隔多久重新拉一次数据。"
+  },
+  "ollama_url": {
+    "description": "本地算力地址",
+    "type": "string",
+    "default": "http://127.0.0.1:11434",
+    "hint": "情感总结全部在本机完成。"
+  },
+  "lookback_messages": {
+    "description": "每人最多读取多少条历史",
+    "type": "int",
+    "default": 200,
+    "hint": "首次分析时的依据上限。"
+  },
+  "min_messages": {
+    "description": "最少消息数",
+    "type": "int",
+    "default": 8,
+    "hint": "少于这个数量不做情感总结。"
+  },
+  "auto_summary": {
+    "description": "每天自动总结情感",
+    "type": "bool",
+    "default": true,
+    "hint": "每天在 daily_run_at 只推理当天新增记忆。"
+  },
+  "daily_run_at": {
+    "description": "每日总结时间（HH:MM）",
+    "type": "string",
+    "default": "23:40",
+    "hint": "必须早于 0 点；错过就等下一天。"
+  },
+  "min_daily_messages": {
+    "description": "当天最少新增消息数",
+    "type": "int",
+    "default": 3,
+    "hint": "新增太少就先攒着。"
+  },
+  "sentiment_half_life_days": {
+    "description": "长期情感的记忆半衰期（天）",
+    "type": "float",
+    "default": 14,
+    "hint": "越大越稳定；14 表示每天只吸收约 4.8% 的新证据。"
+  },
+  "sentiment_max_step": {
+    "description": "单日最大变动",
+    "type": "float",
+    "default": 0.05,
+    "hint": "情感分每天的最大位移，防止一天翻盘。"
+  },
+  "sentiment_seed_weight": {
+    "description": "首次分析的初始权重",
+    "type": "float",
+    "default": 0.5,
+    "hint": "第一次只有一天证据，按比例给初始偏离。"
+  },
+  "sentiment_pos_threshold": {
+    "description": "判「正」阈值",
+    "type": "float",
+    "default": 0.15,
+    "hint": "长期情感分高于此值算正面。"
+  },
+  "sentiment_neg_threshold": {
+    "description": "判「负」阈值",
+    "type": "float",
+    "default": -0.15,
+    "hint": "低于此值算负面。"
+  },
+  "social_emotion_weight": {
+    "description": "对当前对象的情感影响强度",
+    "type": "float",
+    "default": 1.0,
+    "hint": "跟某人说话时，这段情感对八维的叠加强度。"
+  },
+  "neuro_weight": {
+    "description": "情感对内分泌的影响强度",
+    "type": "float",
+    "default": 1.0,
+    "hint": "把所有人的情感汇总成共享的内分泌基线偏移。"
+  },
+  "hormone_link_weight": {
+    "description": "激素对能量的影响强度",
+    "type": "float",
+    "default": 1.0,
+    "hint": "多巴胺/血清素等对能量的修正，约 ±26%。"
+  },
+  "emotion_energy_weight": {
+    "description": "情绪对能量的影响强度",
+    "type": "float",
+    "default": 1.0,
+    "hint": "用愉悦度修正能量，约 ±14%。"
+  },
+  "gate_enabled": {
+    "description": "能量门控（省流）",
+    "type": "bool",
+    "default": true,
+    "hint": "低能量时改用快速模型，过低时放弃主动接话。"
+  },
+  "fast_provider_id": {
+    "description": "省流用的提供商 ID",
+    "type": "string",
+    "default": "deepseek/deepseek-flash",
+    "hint": "必须是 AstrBot 里已存在、且关闭了思考的提供商。"
+  },
+  "thinking_min_energy": {
+    "description": "深度思考解锁的最低能量",
+    "type": "int",
+    "default": 70,
+    "hint": "低于这个能量就不启用深度思考。"
+  },
+  "reply_rate_40_70": {
+    "description": "40%–70% 能量的接话率",
+    "type": "float",
+    "default": 0.5,
+    "hint": "只影响群聊里没被叫到的主动接话。"
+  },
+  "reply_rate_20_40": {
+    "description": "20%–40% 能量的接话率",
+    "type": "float",
+    "default": 0.25,
+    "hint": ""
+  },
+  "reply_rate_10_20": {
+    "description": "10%–20% 能量的接话率",
+    "type": "float",
+    "default": 0.05,
+    "hint": ""
+  },
+  "reply_rate_below_10": {
+    "description": "<10% 能量的接话率",
+    "type": "float",
+    "default": 0.0,
+    "hint": ""
+  },
+  "negative_trigger": {
+    "description": "负面内容触发",
+    "type": "bool",
+    "default": true,
+    "hint": "被辱骂时激素下压并开启一段负面窗口。"
+  },
+  "negative_requires_target": {
+    "description": "只对针对自己/主人的辱骂触发",
+    "type": "bool",
+    "default": false,
+    "hint": "打开后要求私聊/被叫/针对机器人。"
+  },
+  "appraisal_enabled": {
+    "description": "事件级评价（即时反应）",
+    "type": "bool",
+    "default": true,
+    "hint": "收到消息就当场判断意图与应对能力，立刻改变激素；不等每日总结。"
+  },
+  "habituation_decay": {
+    "description": "习惯化衰减",
+    "type": "float",
+    "default": 0.12,
+    "hint": "同类事件每重复一次，冲击乘以 (1 - 该值)，最低保留 25%。"
+  },
+  "sleep_debt_enabled": {
+    "description": "睡眠债影响能量",
+    "type": "bool",
+    "default": true,
+    "hint": "清醒时累积、睡着（01:30–07:30）时偿还，直接扣能量。"
+  },
+  "insult_context": {
+    "description": "辱骂判定结合语境",
+    "type": "bool",
+    "default": true,
+    "hint": "按语境加权（否定/引用/玩笑/良性搭配/第二人称），避免把「纱布」「辣鸡」「这游戏真垃圾」误判成辱骂。关闭则退化为纯关键词匹配。"
+  },
+  "retaliate_enabled": {
+    "description": "被辱骂时反击",
+    "type": "bool",
+    "default": true,
+    "hint": "允许直接怼回去，而不是一味忍着。"
+  },
+  "negative_keywords": {
+    "description": "辱骂关键词（逗号分隔）",
+    "type": "string",
+    "default": "废物,垃圾,傻逼,沙比,煞笔,智障,弱智,脑残,白痴,蠢货,蠢,笨蛋,混蛋,畜生,狗东西,贱人,婊子,去死,滚蛋,滚,恶心,讨厌你,烦人,有病,没用,废柴,loser,你妈,尼玛,操你,艹,草泥马,闭嘴,狗屁,烂货,差劲,不要脸,神经病",
+    "hint": ""
+  },
+  "comfort_enabled": {
+    "description": "难过时找人求安慰",
+    "type": "bool",
+    "default": true,
+    "hint": "进入害怕/低落这类情绪时，主动去找最亲近的人。"
+  },
+  "comfort_emotions": {
+    "description": "触发求安慰的情绪",
+    "type": "string",
+    "default": "害怕,低落,委屈,焦虑,孤独",
+    "hint": "逗号分隔。"
+  },
+  "comfort_cooldown_minutes": {
+    "description": "求安慰冷却（分钟）",
+    "type": "int",
+    "default": 240,
+    "hint": ""
+  },
+  "comfort_target_qq": {
+    "description": "固定安慰对象 QQ",
+    "type": "string",
+    "default": "",
+    "hint": "留空则自动选最亲近的人。"
+  },
+  "comfort_message": {
+    "description": "求安慰的话",
+    "type": "string",
+    "default": "",
+    "hint": "可用 {emotion} 和 {name} 占位。"
+  },
+  "comfort_allow_group": {
+    "description": "允许在群聊里求安慰",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭则只在私聊里说。"
+  },
+  "style_enabled": {
+    "description": "风格约束",
+    "type": "bool",
+    "default": true,
+    "hint": "统计自己发过的话，生成时约束句长与语气，发送前清掉 markdown 和客服腔。"
+  },
+  "style_min_samples": {
+    "description": "风格生效所需样本数",
+    "type": "int",
+    "default": 5,
+    "hint": "少于这个数量不注入风格约束。"
+  },
+  "strip_markdown": {
+    "description": "发送前清理 markdown",
+    "type": "bool",
+    "default": true,
+    "hint": "去掉加粗、标题、列表符号，避免一眼像机器人。"
+  },
+  "max_chars": {
+    "description": "单条回复字数上限",
+    "type": "int",
+    "default": 120,
+    "hint": "超过按句号截断，模仿人类短回复。"
+  },
+  "revise_enabled": {
+    "description": "自我修正",
+    "type": "bool",
+    "default": true,
+    "hint": "回答里出现「可能/大概/应该」这类不确定表述时，小概率补一句修正。"
+  },
+  "revise_rate": {
+    "description": "自我修正概率",
+    "type": "float",
+    "default": 0.12,
+    "hint": "0~1，建议 0.1 左右。"
+  },
+  "revise_cooldown_minutes": {
+    "description": "自我修正冷却（分钟）",
+    "type": "int",
+    "default": 30,
+    "hint": "两次修正之间的最小间隔。"
+  },
+  "learn_enabled": {
+    "description": "自我学习",
+    "type": "bool",
+    "default": true,
+    "hint": "只记明确信号：记住…、我叫…、我的生日是…、X 叫 Y。"
+  },
+  "learn_recall_limit": {
+    "description": "每次最多想起几条",
+    "type": "int",
+    "default": 5,
+    "hint": "召回太多占提示词，3~5 条够用。"
+  },
+  "debug": {
+    "description": "调试日志",
+    "type": "bool",
+    "default": false,
+    "hint": ""
+  }
+}
