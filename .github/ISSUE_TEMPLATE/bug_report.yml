@@ -1,0 +1,71 @@
+name: Bug 报告
+description: 报告一个可复现的问题
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先确认：日志里有没有 `[affect_core]` 开头的报错，以及是否已经重载过插件。
+
+  - type: input
+    id: plugin_version
+    attributes:
+      label: 插件版本
+      description: metadata.yaml 里的 version，或日志里的 code_version
+      placeholder: "1.5.0"
+    validations:
+      required: true
+
+  - type: input
+    id: astrbot_version
+    attributes:
+      label: AstrBot 版本
+      placeholder: "4.29.3"
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: 推理模型
+      placeholder: "deepseek-r1:8b"
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 出问题的模块
+      options:
+        - 情感总结
+        - 能量 / 门控
+        - 辱骂识别
+        - 风格约束
+        - 自我修正
+        - 自我学习
+        - 面板
+        - 安装 / 加载
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 发送 xxx
+        2. 执行 /xxx
+        3. 看到 xxx
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 请先删掉昵称、QQ 号、群号等个人信息
+      render: shell

@@ -1,0 +1,43 @@
+name: 功能建议
+description: 提出一个新的行为或配置项
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这个插件追求的是「行为像人」，不是「功能更多」。建议描述清楚它对应哪种人类行为。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 现在的表现有什么问题
+      placeholder: 例如：被同一句话反复挑衅时，反应强度没有变化
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你希望的改动
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: 影响哪一层
+      options:
+        - 神经内分泌（激素）
+        - 核心情感（情绪）
+        - 关系层（情感）
+        - 资源层（能量）
+        - 人味三件套
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: tradeoff
+    attributes:
+      label: 可能的副作用
+      description: 例如：会让反应更迟钝、会占用更多提示词

@@ -16,3 +16,5 @@ jobs:
         run: python -m compileall -q .
       - name: Validate config schema
         run: python -c "import json; json.load(open('_conf_schema.json', encoding='utf-8'))"
+      - name: Check version consistency
+        run: python scripts/check_version.py

@@ -356,11 +356,16 @@ python -c "import json; json.load(open('_conf_schema.json', encoding='utf-8'))"
 
 ## 贡献
 
-欢迎 Issue 与 PR。提交前请：
+欢迎 Issue 与 PR。完整流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，发版见 [docs/RELEASE.md](docs/RELEASE.md)。
 
-1. 跑通 `python -m compileall -q .`
-2. 不要提交 `data/`、`*.log`、`pages/affect/data.json`
-3. 涉及情感参数调整的改动，请在 PR 里说明预期行为变化
+提交前请跑：
+
+```bash
+python -m compileall -q .
+python scripts/check_version.py
+```
+
+不要提交 `data/`、`*.log`、`pages/affect/data.json`，也不要在截图或日志里保留真实昵称与 QQ 号。
 
 ---
 
