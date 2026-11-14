@@ -1,15 +1,18 @@
 # Affect Core · 影响核心
 
-![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.29.0-0b57d0)
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
-![License](https://img.shields.io/badge/License-MIT-2ea44f)
-![Local](https://img.shields.io/badge/Inference-Local%20Ollama-6aa2ff)
+[![Release](https://img.shields.io/github/v/release/Furina-l18/deepseek-extra-plugin?color=0b57d0)](https://github.com/Furina-l18/deepseek-extra-plugin/releases)
+[![Downloads](https://img.shields.io/github/downloads/Furina-l18/deepseek-extra-plugin/total?color=6aa2ff)](https://github.com/Furina-l18/deepseek-extra-plugin/releases)
+[![Stars](https://img.shields.io/github/stars/Furina-l18/deepseek-extra-plugin?color=6aa2ff)](https://github.com/Furina-l18/deepseek-extra-plugin/stargazers)
+[![License](https://img.shields.io/github/license/Furina-l18/deepseek-extra-plugin?color=2ea44f)](LICENSE)
+[![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.29.0-0b57d0)](https://github.com/AstrBotDevs/AstrBot)
 
 > 给聊天机器人一套「像人」的内部状态：激素驱动的情绪与能量、按人独立的长期情感，以及风格约束 / 自我修正 / 自我学习。
 
 AstrBot 插件。全部推理在本机 Ollama 上完成，对话内容不会发往任何第三方。
 
 仓库：<https://github.com/Furina-l18/deepseek-extra-plugin> · 作者：Furina-l18 · 协议：MIT
+
+**[⬇ 下载最新版本](https://github.com/Furina-l18/deepseek-extra-plugin/releases/latest)** · [更新日志](CHANGELOG.md)
 
 ![面板截图](docs/screenshot.png)
 
@@ -99,7 +102,7 @@ cd <AstrBot>/data/plugins
 git clone https://github.com/Furina-l18/deepseek-extra-plugin astrbot_plugin_affect_core
 ```
 
-或下载 Release 压缩包，解压后重命名目录为 `astrbot_plugin_affect_core`。
+或从 [Releases](https://github.com/Furina-l18/deepseek-extra-plugin/releases/latest) 下载 `astrbot-plugin-affect-core.zip`，解压到 `data/plugins/` 并确认目录名为 `astrbot_plugin_affect_core`。
 
 目录名必须与 `metadata.yaml` 中的 `name` 一致，否则 AstrBot 不会加载。
 
