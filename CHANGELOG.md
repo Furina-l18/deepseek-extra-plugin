@@ -1,4 +1,15 @@
-# Changelog
+﻿# Changelog
+
+## 1.6.1
+
+- 新增桌面反向通道：新增配置 desktop_bridge_enabled（默认开）与 desktop_event_gain（0.1~3.0）。
+  读取 plugin_data/astrbot_plugin_affect_core/desktop_events.jsonl，按字节偏移增量消费，
+  把桌面端写下的事件折算成十种激素；支持 13 种 kind，负面事件同时带一段低落窗口。
+- 新增跨日补跑：新增配置 daily_catchup_enabled（默认开）。昨天 23:40 那次没跑成（关机/不在线/插件停用），
+  今天第一个 tick 立刻补做一次；每日推理本身是增量的，补跑不会重复也不会遗漏。
+- 能量门控明确为 QQ 侧：gate_enabled 只影响 QQ 对话的模型选择与接话率，桌面侧不受能量影响；
+  相关配置的 hint 写清了作用范围。
+- 新增 gate 与 desktop 字段写入页面快照，方便核对当前门控状态与反向队列进度。
 
 ## 1.5.0
 

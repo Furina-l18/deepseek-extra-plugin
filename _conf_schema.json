@@ -57,13 +57,13 @@
     "description": "每天自动总结情感",
     "type": "bool",
     "default": true,
-    "hint": "每天在 daily_run_at 只推理当天新增记忆。"
+    "hint": "每天在 daily_run_at 推理一次当天新增记忆；错过的那次会在新一天开始时补跑。"
   },
   "daily_run_at": {
     "description": "每日总结时间（HH:MM）",
     "type": "string",
     "default": "23:40",
-    "hint": "必须早于 0 点；错过就等下一天。"
+    "hint": "必须早于 0 点；到点没跑成，第二天一开机会立刻补跑一次。"
   },
   "min_daily_messages": {
     "description": "当天最少新增消息数",
@@ -129,7 +129,7 @@
     "description": "能量门控（省流）",
     "type": "bool",
     "default": true,
-    "hint": "低能量时改用快速模型，过低时放弃主动接话。"
+    "hint": "QQ 侧开关：能量低于阈值时把 QQ 对话切到 fast_provider（省流），桌面 DSH 侧不受影响。"
   },
   "fast_provider_id": {
     "description": "省流用的提供商 ID",
@@ -141,7 +141,7 @@
     "description": "深度思考解锁的最低能量",
     "type": "int",
     "default": 70,
-    "hint": "低于这个能量就不启用深度思考。"
+    "hint": "只在能量门控打开时生效；阈值越高越早切便宜模型。"
   },
   "reply_rate_40_70": {
     "description": "40%–70% 能量的接话率",
@@ -310,5 +310,23 @@
     "type": "bool",
     "default": false,
     "hint": ""
+  },
+  "desktop_bridge_enabled": {
+    "description": "桌面反向通道",
+    "type": "bool",
+    "default": true,
+    "hint": "读取桌面端（DSH）写下的经历，折算成激素变化；只影响语气，不影响思考深度。"
+  },
+  "desktop_event_gain": {
+    "description": "桌面事件的影响倍率",
+    "type": "float",
+    "default": 1.0,
+    "hint": "0.1~3.0，1.0 为默认强度。"
+  },
+  "daily_catchup_enabled": {
+    "description": "错过每日推理后自动补跑",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后：昨天那次整夜没跑成（关机/不在线/插件停用），今天第一个 tick 就补做一次，不再干等下一个固定时间。"
   }
 }

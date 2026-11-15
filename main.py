@@ -21,7 +21,7 @@ import random
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -65,11 +65,30 @@ except ImportError:  # 单独测试
     from profiles import ProfileStore  # type: ignore
 
 DEFAULT_MODEL = "deepseek-r1:8b"
-CODE_VERSION = "1.5.0"
+CODE_VERSION = "1.6.1"
 DEFAULT_DAILY_AT = "23:40"
 DEFAULT_COMFORT_EMOTIONS = "害怕,低落,委屈,焦虑,孤独"
 FAST_PROVIDER_DEFAULT = "deepseek/deepseek-flash"
 PROVIDER_EXTRA_KEY = "selected_provider"
+
+# —— 桌面反向通道：DSH 侧的经历回来折算成激素 ——
+DESKTOP_QUEUE = "desktop_events.jsonl"
+DESKTOP_EVENTS: dict[str, dict[str, float]] = {
+    "praise": {"dopamine": 0.06, "serotonin": 0.04, "oxytocin": 0.03},
+    "thanks": {"oxytocin": 0.04, "serotonin": 0.03},
+    "insult": {"cortisol": 0.10, "adrenaline": 0.06, "serotonin": -0.05},
+    "happy": {"dopamine": 0.06, "serotonin": 0.03},
+    "sad": {"serotonin": -0.06, "cortisol": 0.04},
+    "angry": {"adrenaline": 0.08, "cortisol": 0.06, "serotonin": -0.03},
+    "stress": {"cortisol": 0.07, "norepinephrine": 0.06},
+    "tired": {"melatonin": 0.06, "cortisol": -0.03},
+    "late_night": {"melatonin": 0.08, "ghrelin": 0.03},
+    "rest": {"melatonin": 0.05, "cortisol": -0.05, "serotonin": 0.02},
+    "ignored": {"serotonin": -0.04, "cortisol": 0.03},
+    "work_done": {"dopamine": 0.06, "endorphin": 0.04},
+    "worry": {"cortisol": 0.05, "norepinephrine": 0.05},
+}
+DESKTOP_NEGATIVE = {"insult", "sad", "angry", "stress", "ignored", "worry"}
 
 NEGATIVE_KEYWORDS = (
     "废物,垃圾,傻逼,沙比,煞笔,智障,弱智,脑残,白痴,蠢货,蠢,笨蛋,混蛋,畜生,"
@@ -251,6 +270,7 @@ class AffectCore(Star):
             self.min_messages = max(1, int(cfg.get("min_messages", 8)))
             self.auto_summary = bool(cfg.get("auto_summary", True))
             self.daily_run_at = str(cfg.get("daily_run_at") or DEFAULT_DAILY_AT)
+            self.daily_catchup = bool(cfg.get("daily_catchup_enabled", True))
             self.min_daily_messages = max(1, int(cfg.get("min_daily_messages", 3)))
             self.sentiment_half_life_days = max(
                 1.0, float(cfg.get("sentiment_half_life_days", 14))
@@ -293,6 +313,12 @@ class AffectCore(Star):
             ).strip()
             self.thinking_min = int(cfg.get("thinking_min_energy", 70))
 
+            # —— 桌面反向通道 ——
+            self.desktop_bridge = bool(cfg.get("desktop_bridge_enabled", True))
+            self.desktop_gain = max(
+                0.1, min(3.0, float(cfg.get("desktop_event_gain", 1.0)))
+            )
+
             self.comfort_enabled = bool(cfg.get("comfort_enabled", True))
             raw_ce = str(cfg.get("comfort_emotions") or DEFAULT_COMFORT_EMOTIONS)
             self.comfort_emotions = {w.strip() for w in raw_ce.split(",") if w.strip()}
@@ -319,6 +345,91 @@ class AffectCore(Star):
             self.debug = bool(cfg.get("debug", False))
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[affect_core] 读取配置失败，使用默认值: {exc}")
+
+    # ------------------------------------------------------------ 桌面反向通道
+
+    def _desktop_path(self) -> Path:
+        try:
+            return self._root / DESKTOP_QUEUE
+        except Exception:  # noqa: BLE001
+            return Path(__file__).parent / "data" / DESKTOP_QUEUE
+
+    def _drain_desktop_events(self) -> int:
+        """消费 DSH 侧追加的反向事件，把桌面上的经历折算成激素。
+
+        队列是 append-only 的 jsonl，按 state["desktop_offset"] 字节偏移读，
+        文件被截断时重置偏移；单行解析失败直接跳过，不影响后续。
+        """
+        if not self.desktop_bridge:
+            return 0
+        path = self._desktop_path()
+        try:
+            if not path.is_file():
+                return 0
+            size = path.stat().st_size
+            offset = int(self.state.get("desktop_offset", 0) or 0)
+            if offset < 0 or offset > size:
+                # 文件被截断或换过：从头读
+                offset = 0
+                self.state["desktop_offset"] = 0
+            if offset == size:
+                return 0
+            with path.open("rb") as fh:
+                fh.seek(offset)
+                chunk = fh.read()
+            applied = 0
+            for raw in chunk.splitlines():
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line.decode("utf-8", "ignore"))
+                except Exception:  # noqa: BLE001
+                    continue
+                if isinstance(ev, dict) and self._apply_desktop_event(ev):
+                    applied += 1
+            self.state["desktop_offset"] = size
+            if applied:
+                self.state["desktop_events"] = (
+                    int(self.state.get("desktop_events", 0) or 0) + applied
+                )
+                self._invalidate()
+                self._save_state()
+                logger.info(f"[affect_core] 桌面事件 +{applied}，已计入激素")
+            return applied
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[affect_core] 读取桌面事件失败: {exc}")
+            return 0
+
+    def _apply_desktop_event(self, ev: dict) -> bool:
+        kind = str(ev.get("kind") or "").strip().lower()
+        table = DESKTOP_EVENTS.get(kind)
+        if not table:
+            return False
+        try:
+            power = max(0.0, min(1.0, float(ev.get("intensity", 0.5))))
+        except Exception:  # noqa: BLE001
+            power = 0.5
+        power = power or 0.5
+        levels = self.state.setdefault("h", {})
+        for name, delta in table.items():
+            base = float(levels.get(name, 0.5))
+            levels[name] = max(
+                0.0, min(1.0, base + delta * power * self.desktop_gain)
+            )
+        now_ts = time.time()
+        if kind in DESKTOP_NEGATIVE:
+            self.state["negative_until"] = max(
+                float(self.state.get("negative_until", 0.0) or 0.0),
+                now_ts + 240.0 + 600.0 * power,
+            )
+        self.state["desktop_last_event"] = {
+            "ts": now_ts,
+            "kind": kind,
+            "intensity": round(power, 2),
+            "note": str(ev.get("note") or "").strip()[:80],
+        }
+        return True
 
     def _save_state(self) -> None:
         try:
@@ -571,6 +682,7 @@ class AffectCore(Star):
                     min(1.0, (now_ts - float(self.state.get("ts", now_ts))) / 3600.0),
                 )
                 self._update_sleep_debt(dt_h)
+                self._drain_desktop_events()
                 self.mood.update(self._energy_now()[2], self._neuro_bias())
                 self._invalidate()
                 self._save_state()
@@ -586,11 +698,32 @@ class AffectCore(Star):
                 await asyncio.sleep(60)
 
     def _is_due(self) -> bool:
+        """今天该不该做一次情感推理（补跑 + 到点跑）。
+
+        两种触发：
+        1. 到了 daily_run_at 且今天还没做过；
+        2. 跨日补跑：昨天那一次整个错过了（关机、夜间不在线、插件没启用），
+           新的一天一开始（还没到 daily_run_at 也行）就先补做一次，
+           否则会一直等到下一天的固定时间，可能永远轮不上。
+        """
         now = datetime.now()
         hh, mm = _parse_hhmm(self.daily_run_at)
         target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         today = now.strftime("%Y-%m-%d")
-        return now >= target and self.state.get("daily_day") != today
+        last = str(self.state.get("daily_day") or "")
+        if last == today:
+            return False
+        if now >= target:
+            return True
+        if not self.daily_catchup:
+            return False
+        yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        if last != yesterday:
+            logger.info(
+                f"[affect_core] 昨天（{yesterday}）的每日情感推理没做（上次 {last or '没有'}），现在补跑"
+            )
+            return True
+        return False
 
     # ------------------------------------------------------------ 情感推理
 
@@ -961,6 +1094,7 @@ class AffectCore(Star):
         if insulted:
             self._invalidate()
 
+        self._drain_desktop_events()
         self.mood.update(self._energy_now()[2], self._neuro_bias())
         self._invalidate()
         view = self._view()
@@ -1475,6 +1609,18 @@ class AffectCore(Star):
                 "sleep_debt": round(float(self.state.get("sleep_debt", 0.0)), 1),
             },
             "social": view["social"],
+            "gate": {
+                "enabled": bool(self.gate_enabled),
+                "thinking_min": int(self.thinking_min),
+                "fast_provider": self.fast_provider,
+                "scope": "qq_only",
+            },
+            "desktop": {
+                "events": int(self.state.get("desktop_events", 0) or 0),
+                "offset": int(self.state.get("desktop_offset", 0) or 0),
+                "last_event": self.state.get("desktop_last_event"),
+                "queue": str(self._desktop_path()),
+            },
             "endocrine": self._global_state(),
             "people": self.store.list_all(),
             "card": self.state.get("last_card") or {},
