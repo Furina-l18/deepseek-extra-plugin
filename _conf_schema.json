@@ -311,11 +311,17 @@
     "default": false,
     "hint": ""
   },
+  "two_way_enabled": {
+    "description": "双向联动（桌面 ↔ QQ）",
+    "type": "bool",
+    "default": false,
+    "hint": "总开关，默认关闭。打开后：桌面端（DSH）能读到这里的激素/情绪/能量，也能把经历写回激素。关闭时两边互不影响。"
+  },
   "desktop_bridge_enabled": {
     "description": "桌面反向通道",
     "type": "bool",
     "default": true,
-    "hint": "读取桌面端（DSH）写下的经历，折算成激素变化；只影响语气，不影响思考深度。"
+    "hint": "双向联动的子开关，只在总开关打开时生效：接收桌面端写来的经历并折算成激素。"
   },
   "desktop_event_gain": {
     "description": "桌面事件的影响倍率",

@@ -1,5 +1,14 @@
 ﻿# Changelog
 
+## 1.6.2
+
+- 双向联动改为手动开关：新增 `two_way_enabled`（默认 **关闭**）。
+  打开后桌面端（DSH）才能读到这里的激素/情绪/能量，也才能把经历写回激素；
+  关闭时两边完全独立，互不影响。
+- `desktop_bridge_enabled` 降级为子开关，只在 `two_way_enabled` 打开时生效。
+- 版本号同步到 v1.6.2。
+
+
 ## 1.6.1
 
 - 新增桌面反向通道：新增配置 desktop_bridge_enabled（默认开）与 desktop_event_gain（0.1~3.0）。

@@ -65,7 +65,7 @@ except ImportError:  # 单独测试
     from profiles import ProfileStore  # type: ignore
 
 DEFAULT_MODEL = "deepseek-r1:8b"
-CODE_VERSION = "1.6.1"
+CODE_VERSION = "1.6.2"
 DEFAULT_DAILY_AT = "23:40"
 DEFAULT_COMFORT_EMOTIONS = "害怕,低落,委屈,焦虑,孤独"
 FAST_PROVIDER_DEFAULT = "deepseek/deepseek-flash"
@@ -314,7 +314,9 @@ class AffectCore(Star):
             self.thinking_min = int(cfg.get("thinking_min_energy", 70))
 
             # —— 桌面反向通道 ——
-            self.desktop_bridge = bool(cfg.get("desktop_bridge_enabled", True))
+            # 双向联动总开关：默认关闭，要手动打开才收发桌面事件
+            self.two_way = bool(cfg.get("two_way_enabled", False))
+            self.desktop_bridge = self.two_way and bool(cfg.get("desktop_bridge_enabled", True))
             self.desktop_gain = max(
                 0.1, min(3.0, float(cfg.get("desktop_event_gain", 1.0)))
             )
