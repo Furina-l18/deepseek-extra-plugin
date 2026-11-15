@@ -196,7 +196,7 @@ def _parse_hhmm(text: str) -> tuple[int, int]:
     "affect_core",
     "Furina-l18",
     "激素 / 情绪 / 情感 / 能量 四层合一：神经内分泌驱动情绪与能量，情感按人独立并汇总成共享内分泌基线",
-    "1.5.0",
+    "1.6.2",
 )
 class AffectCore(Star):
     def __init__(self, context: Context, config=None):
