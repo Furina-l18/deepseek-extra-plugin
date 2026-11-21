@@ -65,7 +65,7 @@ except ImportError:  # 单独测试
     from profiles import ProfileStore  # type: ignore
 
 DEFAULT_MODEL = "deepseek-r1:8b"
-CODE_VERSION = "1.6.2"
+CODE_VERSION = "1.6.4"
 DEFAULT_DAILY_AT = "23:40"
 DEFAULT_COMFORT_EMOTIONS = "害怕,低落,委屈,焦虑,孤独"
 FAST_PROVIDER_DEFAULT = "deepseek/deepseek-flash"
@@ -226,6 +226,8 @@ class AffectCore(Star):
         self._task_daily: asyncio.Task | None = None
         self._busy = False
         self._rounds = 0
+        self._group_hits: list[float] = []  # 最近几次「主动接话」的时间戳
+        self._last_reply: dict[str, dict] = {}  # 每个会话里我最后一次回话的时间与对象
         self._global_cache: tuple[float, dict] = (0.0, {})
         self._provider_ok: bool | None = None
         # —— 性能相关缓存 ——
@@ -312,6 +314,16 @@ class AffectCore(Star):
                 cfg.get("fast_provider_id") or FAST_PROVIDER_DEFAULT
             ).strip()
             self.thinking_min = int(cfg.get("thinking_min_energy", 70))
+
+            # —— 群聊场合分级（不参与所有对话）——
+            # 被 @ / 唤醒 / 私聊 = 必接；其余群消息按下面的规则决定接不接。
+            self.group_reply_rate = max(
+                0.0, min(1.0, float(cfg.get("group_reply_rate", 0.25)))
+            )
+            self.group_quiet_start = str(cfg.get("group_quiet_start", "00:00") or "")
+            self.group_quiet_end = str(cfg.get("group_quiet_end", "07:30") or "")
+            self.group_max_per_window = max(0, int(cfg.get("group_max_per_5min", 2)))
+            self.group_mention_boost = bool(cfg.get("group_mention_boost", True))
 
             # —— 桌面反向通道 ——
             # 双向联动总开关：默认关闭，要手动打开才收发桌面事件
@@ -892,6 +904,110 @@ class AffectCore(Star):
 
     # ------------------------------------------------------------ 消息与门控
 
+    @staticmethod
+    def _hhmm_minutes(value: str) -> int | None:
+        try:
+            hh, mm = str(value).strip().split(":")
+            return int(hh) * 60 + int(mm)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _in_quiet_window(self, now: datetime) -> bool:
+        start = self._hhmm_minutes(self.group_quiet_start)
+        end = self._hhmm_minutes(self.group_quiet_end)
+        if start is None or end is None or start == end:
+            return False
+        cur = now.hour * 60 + now.minute
+        if start < end:
+            return start <= cur < end
+        return cur >= start or cur < end
+
+    def _is_directed(self, event: AstrMessageEvent, text: str) -> tuple[bool, str]:
+        """这句话是不是在找我说话（@、回我、接着我上一句、开口就用「你」…）。"""
+        if bool(getattr(event, "is_at_or_wake_command", False)):
+            return True, "被 @ 或叫了名字"
+
+        session = str(getattr(event, "unified_msg_origin", "") or "")
+        me = ""
+        try:
+            me = str(event.get_self_id() or "")
+        except Exception:  # noqa: BLE001
+            me = ""
+        last = self._last_reply.get(session) or {}
+
+        # 1) 回复的是我的消息
+        try:
+            chain = list(getattr(getattr(event, "message_obj", None), "message", []) or [])
+        except Exception:  # noqa: BLE001
+            chain = []
+        for comp in chain:
+            if comp.__class__.__name__ != "Reply":
+                continue
+            rid = str(getattr(comp, "sender_id", "") or "")
+            if me and rid and rid == me:
+                return True, "在回我的消息"
+            if last and time.time() - float(last.get("ts") or 0) <= 300:
+                return True, "在回我的消息"
+
+        # 2) 同一个人接着我刚说的话往下说
+        if last:
+            try:
+                same = str(event.get_sender_id() or "") == str(last.get("qq") or "")
+            except Exception:  # noqa: BLE001
+                same = False
+            if same and time.time() - float(last.get("ts") or 0) <= 180:
+                return True, "接着刚才那句"
+
+        t = (text or "").strip()
+        if not t:
+            return False, ""
+        if "鲸屿" in t or "屿屿" in t or "大肥鱼" in t:
+            return True, "话里提到我"
+        if t[0] in "你您":
+            return True, "开口就在对我说话"
+        for pat in (
+            "在吗",
+            "在不在",
+            "在么",
+            "你说呢",
+            "你觉得",
+            "你怎么",
+            "你为啥",
+            "你干嘛",
+            "你刚才",
+            "你帮我",
+            "你给我",
+            "你去找",
+            "你想不想",
+        ):
+            if pat in t:
+                return True, f"问的是我（{pat}）"
+        if ("你" in t or "您" in t) and (t.endswith("？") or t.endswith("?")):
+            return True, "带问号、又提到你"
+        return False, ""
+
+    def _group_speak_allowed(self, text: str, energy: float) -> tuple[bool, str]:
+        """没被点名的群消息：值不值得主动接这一句。"""
+        now = datetime.now()
+        if self._in_quiet_window(now):
+            return False, f"静默时段 {self.group_quiet_start}-{self.group_quiet_end}"
+        if self.group_mention_boost and (
+            "鲸屿" in text or "屿屿" in text or "大肥鱼" in text
+        ):
+            self._group_hits.append(time.time())
+            return True, "话里提到我"
+        cutoff = time.time() - 300
+        self._group_hits = [t for t in self._group_hits if t >= cutoff]
+        if len(self._group_hits) >= self.group_max_per_window:
+            return False, f"5 分钟内已主动接了 {len(self._group_hits)} 次"
+        rate = self.group_reply_rate * float(self.energy.rate(energy))
+        if rate <= 0.0:
+            return False, f"能量 {energy:.0f}%，不接"
+        if random.random() < rate:
+            self._group_hits.append(time.time())
+            return True, f"按 {rate:.0%} 的概率接一句"
+        return False, f"先不接（{rate:.0%} 没中）"
+
     @filter.event_message_type(
         filter.EventMessageType.ALL,
         priority=sys.maxsize - 20,
@@ -931,6 +1047,22 @@ class AffectCore(Star):
             text = ""
         self._appraise(event, text)
 
+        # 群聊场合分级：与「门控」（低电切便宜模型）解耦，关掉门控也依然生效
+        try:
+            energy0 = self._energy_now()[2]
+            directed0, why0 = self._is_directed(event, text)
+            if (not event.is_private_chat()) and not directed0:
+                allow, why = self._group_speak_allowed(text, energy0)
+                if not allow:
+                    event.stop_event()
+                    logger.info(f"[affect_core] 这句不接：{why}")
+                    return
+                logger.debug(f"[affect_core] 接一句：{why}")
+            elif why0:
+                logger.debug(f"[affect_core] 这句接：{why0}")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[affect_core] 群聊分级失败: {exc}")
+
         if not self.gate_enabled:
             return
         try:
@@ -941,11 +1073,6 @@ class AffectCore(Star):
                 return
             if energy < self.thinking_min or (is_group and not addressed):
                 event.set_extra(PROVIDER_EXTRA_KEY, self.fast_provider)
-            if is_group and not addressed:
-                rate = self.energy.rate(energy)
-                if rate <= 0.0 or (rate < 1.0 and random.random() > rate):
-                    event.stop_event()
-                    logger.debug(f"[affect_core] 能量 {energy:.0f}%，放弃主动接话")
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"[affect_core] 门控失败: {exc}")
 
@@ -1437,6 +1564,20 @@ class AffectCore(Star):
                 req.system_prompt = (req.system_prompt or "") + "\n\n" + "\n".join(blocks)
             except Exception:  # noqa: BLE001
                 pass
+
+    @filter.on_llm_response(priority=sys.maxsize - 20)
+    async def remember_reply(self, event: AstrMessageEvent, response) -> None:
+        """记住「我刚回过谁」，下一句同一个人接着说话时直接接。"""
+        try:
+            session = str(getattr(event, "unified_msg_origin", "") or "")
+            if not session:
+                return
+            self._last_reply[session] = {
+                "ts": time.time(),
+                "qq": str(event.get_sender_id() or ""),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[affect_core] 记录回话失败: {exc}")
 
     @filter.on_llm_response(priority=sys.maxsize - 6)
     async def watch_response(self, event: AstrMessageEvent, response) -> None:
