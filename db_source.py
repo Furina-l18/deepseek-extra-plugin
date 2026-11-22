@@ -21,6 +21,7 @@ class ChatMessage:
     role: str
     content: str
     timestamp: float
+    id: int = 0
 
 
 @dataclass
@@ -96,7 +97,7 @@ def fetch_messages(db_path: Path, sender_id: str, limit: int = 200) -> list[Chat
     try:
         rows = con.execute(
             """
-            SELECT role, content, timestamp
+            SELECT id, role, content, timestamp
               FROM messages
              WHERE sender_id = ? AND role = 'user'
              ORDER BY timestamp DESC
@@ -109,6 +110,7 @@ def fetch_messages(db_path: Path, sender_id: str, limit: int = 200) -> list[Chat
                 role=str(r["role"]),
                 content=str(r["content"] or ""),
                 timestamp=float(r["timestamp"] or 0.0),
+                id=int(r["id"] or 0),
             )
             for r in rows
         ]
@@ -131,7 +133,7 @@ def fetch_messages_since(
     try:
         rows = con.execute(
             """
-            SELECT role, content, timestamp
+            SELECT id, role, content, timestamp
               FROM messages
              WHERE sender_id = ? AND role = 'user' AND timestamp > ?
              ORDER BY timestamp ASC
@@ -144,6 +146,7 @@ def fetch_messages_since(
                 role=str(r["role"]),
                 content=str(r["content"] or ""),
                 timestamp=float(r["timestamp"] or 0.0),
+                id=int(r["id"] or 0),
             )
             for r in rows
         ]
@@ -156,3 +159,37 @@ def fetch_messages_since(
 def fetch_all_messages(db_path: Path, sender_id: str, limit: int = 4000) -> list[ChatMessage]:
     """按人取更多历史（用于首次全量总结）。"""
     return fetch_messages(db_path, sender_id, limit)
+
+
+def fetch_messages_after_id(
+    db_path: Path, sender_id: str, after_id: int, limit: int = 2000
+) -> list[ChatMessage]:
+    """只取「还没被情感推理标记过」的发言（按消息 id 水位，正序）。"""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        rows = con.execute(
+            """
+            SELECT id, role, content, timestamp
+              FROM messages
+             WHERE sender_id = ? AND role = 'user' AND id > ?
+             ORDER BY id ASC
+             LIMIT ?
+            """,
+            (sender_id, int(after_id), limit),
+        ).fetchall()
+        return [
+            ChatMessage(
+                role=str(r["role"]),
+                content=str(r["content"] or ""),
+                timestamp=float(r["timestamp"] or 0.0),
+                id=int(r["id"] or 0),
+            )
+            for r in rows
+        ]
+    except Exception:
+        return []
+    finally:
+        con.close()

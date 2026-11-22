@@ -113,8 +113,13 @@ def _is_junk_keyword(text: str) -> bool:
     return any(part in k for part in _JUNK_PARTS)
 
 
-def build_material(name: str, contents: list[str], max_chars: int = 6000) -> str:
-    """把聊天记录压成一段材料，从最近的往前取，控制总长度。"""
+def build_material(
+    name: str, contents: list[str], max_chars: int = 6000, prior: str = ""
+) -> str:
+    """把聊天记录压成一段材料，从最近的往前取，控制总长度。
+
+    prior 是此前已经推理过的旧档案摘要：只作背景参考，不让模型重复推理。
+    """
     picked: list[str] = []
     used = 0
     for text in reversed(contents):
@@ -127,7 +132,13 @@ def build_material(name: str, contents: list[str], max_chars: int = 6000) -> str
         used += len(c)
     picked.reverse()
     body = "\n".join(f"- {c}" for c in picked)
-    return f"以下是「{name}」的聊天发言（按时间正序）：\n{body}"
+    head = ""
+    if prior.strip():
+        head = (
+            "背景（此前已经整理过，只作参考，不要重新推理、不要计入本轮情绪）：\n"
+            f"{prior.strip()}\n\n"
+        )
+    return f"{head}以下是「{name}」这一轮新的聊天发言（按时间正序）：\n{body}"
 
 
 def list_models(base_url: str, timeout: float = 5.0) -> list[str]:
@@ -182,6 +193,43 @@ def call_ollama(
         raise RuntimeError(f"Ollama HTTP {exc.code}: {detail}") from exc
     obj = json.loads(raw)
     return str((obj.get("message") or {}).get("content") or "")
+
+
+def unload_model(base_url: str, model: str, timeout: float = 15.0) -> bool:
+    """让 Ollama 立刻把模型从显存里卸掉（keep_alive=0），返回是否成功。
+
+    Ollama 的约定：/api/generate 带空 prompt + keep_alive=0 时只做卸载，不产生推理。
+    """
+    payload = {"model": model, "keep_alive": 0}
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/api/generate",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            resp.read()
+        return True
+    except Exception:
+        return False
+
+
+def running_models(base_url: str, timeout: float = 5.0) -> list[str]:
+    """列出当前驻留在内存/显存里的模型名。"""
+    try:
+        with urllib.request.urlopen(  # noqa: S310
+            f"{base_url.rstrip('/')}/api/ps", timeout=timeout
+        ) as resp:
+            obj = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return [
+            str(m.get("name") or m.get("model") or "")
+            for m in (obj.get("models") or [])
+            if isinstance(m, dict)
+        ]
+    except Exception:
+        return []
 
 
 def _iter_json_objects(text: str):

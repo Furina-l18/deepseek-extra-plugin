@@ -65,9 +65,54 @@ except ImportError:  # 单独测试
     from profiles import ProfileStore  # type: ignore
 
 DEFAULT_MODEL = "deepseek-r1:8b"
-CODE_VERSION = "1.6.4"
+CODE_VERSION = "1.6.13"
 DEFAULT_DAILY_AT = "23:40"
 DEFAULT_COMFORT_EMOTIONS = "害怕,低落,委屈,焦虑,孤独"
+
+# 求安慰的备选句子：按情绪分组，口吻是自己的，不套模板
+COMFORT_LINES: dict[str, list[str]] = {
+    "低落": [
+        "今天有点提不起劲，你在吗",
+        "心情塌下去一块，想跟你说两句",
+        "不太想一个人待着，陪我一会儿行吗",
+        "没什么大事，就是有点闷",
+    ],
+    "难过": [
+        "有点难过，说不太清，你在吗",
+        "想找你待一会儿，不用安慰我",
+        "今天不太行，想听你说说话",
+    ],
+    "委屈": [
+        "今天有点委屈，不知道该跟谁说",
+        "心里堵着，想跟你讲两句",
+        "被噎了一下，还没缓过来",
+    ],
+    "害怕": [
+        "有点怕，想找你说说话",
+        "今天心里不踏实，你在不在",
+        "突然有点慌，想听见你的声音",
+    ],
+    "焦虑": [
+        "有点慌，静不下来",
+        "脑子里转个不停，想跟你说说",
+        "坐不住，找你说两句",
+    ],
+    "孤独": [
+        "有点空，想找你说说话",
+        "一个人待着有点闷，你在吗",
+        "屋子里太安静了，想听点人声",
+    ],
+    "疲惫": [
+        "今天累得慌，想听你说两句",
+        "没什么力气，就想找你待一会儿",
+        "撑了一天，想歇在你旁边",
+    ],
+    "_default": [
+        "想找你说两句话，忙的话就算了",
+        "在吗，有点想跟你聊两句",
+        "今天想找你待一会儿",
+    ],
+}
 FAST_PROVIDER_DEFAULT = "deepseek/deepseek-flash"
 PROVIDER_EXTRA_KEY = "selected_provider"
 
@@ -196,7 +241,7 @@ def _parse_hhmm(text: str) -> tuple[int, int]:
     "affect_core",
     "Furina-l18",
     "激素 / 情绪 / 情感 / 能量 四层合一：神经内分泌驱动情绪与能量，情感按人独立并汇总成共享内分泌基线",
-    "1.6.2",
+    "1.6.13",
 )
 class AffectCore(Star):
     def __init__(self, context: Context, config=None):
@@ -206,6 +251,7 @@ class AffectCore(Star):
         self._root.mkdir(parents=True, exist_ok=True)
         self._state_path = self._root / "state.json"
         self._sessions_path = self._root / "sessions.json"
+        self._marks_path = self._root / "analyzed.json"
 
         self.state = self._load_json(self._state_path, {})
         if not isinstance(self.state, dict):
@@ -213,10 +259,15 @@ class AffectCore(Star):
         self._sessions = self._load_json(self._sessions_path, {})
         if not isinstance(self._sessions, dict):
             self._sessions = {}
+        # 情感推理过的消息标记：{qq: {"max_id": 消息id水位, "ts": 标记时间, "count": 已推条数}}
+        self._marks = self._load_json(self._marks_path, {})
+        if not isinstance(self._marks, dict):
+            self._marks = {}
         self.store = ProfileStore(self._root)
 
         self._load_config()
         self.mood = MoodEngine(self.state, self.config)
+        self.mood.evidence_provider = self._mood_evidence
         self.energy = EnergyModel(self.config)
         self.style = StyleProfile(self._root / "style.json", self.style_min_samples)
         self.knowledge = KnowledgeStore(self._root / "knowledge.json")
@@ -273,6 +324,13 @@ class AffectCore(Star):
             self.auto_summary = bool(cfg.get("auto_summary", True))
             self.daily_run_at = str(cfg.get("daily_run_at") or DEFAULT_DAILY_AT)
             self.daily_catchup = bool(cfg.get("daily_catchup_enabled", True))
+            # 情感推理一结束就把本地算力收掉：卸载模型（默认），或连 Ollama 进程一起停
+            self.release_after_infer = bool(cfg.get("release_after_infer", True))
+            self.release_mode = str(cfg.get("release_mode", "unload") or "unload").strip()
+            if self.release_mode not in ("unload", "stop"):
+                self.release_mode = "unload"
+            self.ollama_exe = str(cfg.get("ollama_exe") or "").strip()
+            self.ollama_model_dir = str(cfg.get("ollama_model_dir") or "").strip()
             self.min_daily_messages = max(1, int(cfg.get("min_daily_messages", 3)))
             self.sentiment_half_life_days = max(
                 1.0, float(cfg.get("sentiment_half_life_days", 14))
@@ -317,12 +375,15 @@ class AffectCore(Star):
 
             # —— 群聊场合分级（不参与所有对话）——
             # 被 @ / 唤醒 / 私聊 = 必接；其余群消息按下面的规则决定接不接。
-            self.group_reply_rate = max(
-                0.0, min(1.0, float(cfg.get("group_reply_rate", 0.25)))
-            )
+            self.group_rate_low = max(0.0, min(1.0, float(cfg.get("group_rate_low", 0.048))))
+            self.group_rate_mid = max(0.0, min(1.0, float(cfg.get("group_rate_mid", 0.082))))
+            self.group_rate_high_mid = max(0.0, min(1.0, float(cfg.get("group_rate_high_mid", 0.136))))
+            self.group_rate_high = max(0.0, min(1.0, float(cfg.get("group_rate_high", 0.168))))
+            self.group_tired_factor = max(0.0, min(1.0, float(cfg.get("group_tired_factor", 0.08))))
+            self.group_tired_fatigue = float(cfg.get("group_tired_fatigue", 0.25))
             self.group_quiet_start = str(cfg.get("group_quiet_start", "00:00") or "")
             self.group_quiet_end = str(cfg.get("group_quiet_end", "07:30") or "")
-            self.group_max_per_window = max(0, int(cfg.get("group_max_per_5min", 2)))
+            self.group_max_per_window = 0
             self.group_mention_boost = bool(cfg.get("group_mention_boost", True))
 
             # —— 桌面反向通道 ——
@@ -342,6 +403,13 @@ class AffectCore(Star):
             self.comfort_target_qq = str(cfg.get("comfort_target_qq") or "").strip()
             self.comfort_allow_group = bool(cfg.get("comfort_allow_group", True))
             self.comfort_message = str(cfg.get("comfort_message") or "").strip()
+            # 太累的时候别开口求人陪——开了口又被「累」推回去，会自相矛盾
+            self.comfort_min_energy = float(cfg.get("comfort_min_energy", 12))
+            # 求陪之后的一段窗口里，回复不要用「累」把话关掉
+            self.comfort_window = max(
+                5, int(cfg.get("comfort_window_minutes", 45))
+            ) * 60
+            self.burst_enabled = bool(cfg.get("emotion_burst_enabled", True))
             # —— 人味三件套 ——
             self.style_enabled = bool(cfg.get("style_enabled", True))
             self.style_min_samples = max(3, int(cfg.get("style_min_samples", 5)))
@@ -465,6 +533,38 @@ class AffectCore(Star):
             logger.debug(f"[affect_core] 保存会话失败: {exc}")
 
     # ------------------------------------------------------------ 全局内分泌
+
+    def _mood_evidence(self) -> dict:
+        """每天起点用的证据：相处评分、空窗天数、睡眠债。没有证据就是空。"""
+        now = time.time()
+        scores: list[float] = []
+        weights: list[float] = []
+        samples_total = 0
+        for profile in self.store.list_all():
+            sent = profile.get("sentiment") or {}
+            score = float(sent.get("score") or 0.0)
+            samples = int(sent.get("samples") or 0)
+            if samples < 3:
+                continue
+            last = float(profile.get("last_message_ts") or 0.0)
+            days = max(0.0, (now - last) / 86400.0) if last else 30.0
+            weight = (0.3 + abs(score)) * (0.5 ** (days / 30.0))
+            if weight <= 0:
+                continue
+            scores.append(score)
+            weights.append(weight)
+            samples_total += samples
+        sentiment = None
+        if weights:
+            sentiment = sum(s * w for s, w in zip(scores, weights)) / sum(weights)
+        active_ts = float(self.state.get("active_ts") or 0.0)
+        days_since = (now - active_ts) / 86400.0 if active_ts else None
+        return {
+            "sentiment": sentiment,
+            "samples": samples_total,
+            "days_since_active": days_since,
+            "sleep_debt": float(self.state.get("sleep_debt") or 0.0),
+        }
 
     def _global_state(self) -> dict:
         """所有人的情感 → 一条共享的内分泌基线 + 能量负荷。60 秒缓存。"""
@@ -642,7 +742,14 @@ class AffectCore(Star):
         self.state["boot_ts"] = time.time()
         await self._ensure_model()
         self._register_api()
+        day_before = str(self.state.get("day") or "")
         self.mood.update(self._energy_now()[2], self._neuro_bias())
+        if str(self.state.get("day") or "") != day_before:
+            reasons = list(self.state.get("mood_reasons") or [])
+            logger.info(
+                "[affect_core] 新的一天起点：%s",
+                "；".join(reasons) if reasons else "没有证据，中性",
+            )
         self._save_state()
         self._write_snapshot()
         if self.enabled:
@@ -741,11 +848,73 @@ class AffectCore(Star):
 
     # ------------------------------------------------------------ 情感推理
 
+    def _save_marks(self) -> None:
+        try:
+            tmp = self._marks_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._marks, ensure_ascii=False, indent=2), "utf-8")
+            tmp.replace(self._marks_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[affect_core] 保存推理标记失败: {exc}")
+
+    def _mark_analyzed(self, qq: str, max_id: int, count: int) -> None:
+        key = str(qq)
+        item = self._marks.get(key) if isinstance(self._marks.get(key), dict) else {}
+        item["max_id"] = max(int(item.get("max_id") or 0), int(max_id or 0))
+        item["count"] = int(item.get("count") or 0) + int(count or 0)
+        item["ts"] = time.time()
+        item["day"] = datetime.now().strftime("%Y-%m-%d")
+        self._marks[key] = item
+
+    def _mark_watermark(self, qq: str) -> int:
+        item = self._marks.get(str(qq))
+        if not isinstance(item, dict):
+            return 0
+        try:
+            return int(item.get("max_id") or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _prior_text(self, old: dict | None) -> str:
+        """把旧档案压成几行，只作背景参考，避免把推理过的原话重复喂回去。"""
+        if not old:
+            return ""
+        lines: list[str] = []
+        senti = old.get("sentiment") or {}
+        if senti:
+            lines.append(
+                "整体印象：{}·{}（{}{:+.2f}，样本 {} 天）".format(
+                    senti.get("type_label") or "",
+                    senti.get("label") or "",
+                    "",
+                    float(senti.get("score") or 0.0),
+                    int(senti.get("samples") or 0),
+                ).replace("（+", "（+").replace("·（", "·（")
+            )
+        emos = old.get("emotions") or {}
+        top = sorted(
+            ((k, float(v or 0.0)) for k, v in emos.items()),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )[:3]
+        top = [(k, v) for k, v in top if v >= 0.15]
+        if top:
+            lines.append("常见情绪：" + "、".join(f"{k} {v:.2f}" for k, v in top))
+        kws = [str(k) for k in (old.get("keywords") or []) if str(k).strip()][:4]
+        if kws:
+            lines.append("关键词：" + "、".join(kws))
+        summary = str(old.get("summary") or "").strip()
+        if summary:
+            lines.append("上次的概况：" + summary[:120])
+        mark = self._marks.get(str(old.get("qq") or "")) or {}
+        if isinstance(mark, dict) and mark.get("count"):
+            lines.append(f"已推理过的消息：{int(mark.get('count') or 0)} 条（不再重复推理）")
+        return "\n".join(lines)
+
     def _db_path(self) -> Path | None:
         return db_source.resolve_db(self._root)
 
-    async def _infer(self, name: str, contents: list[str]) -> dict:
-        material = analyzer.build_material(name, contents)
+    async def _infer(self, name: str, contents: list[str], prior: str = "") -> dict:
+        material = analyzer.build_material(name, contents, prior=prior)
         data = None
         for attempt in range(2):
             try:
@@ -873,6 +1042,8 @@ class AffectCore(Star):
         if not db:
             logger.warning("[affect_core] 找不到 conversations.db")
             return 0
+        if self.release_mode == "stop":
+            await self._ensure_ollama()
         self._busy = True
         done = 0
         try:
@@ -883,12 +1054,25 @@ class AffectCore(Star):
                     continue
                 old = self.store.load(stat.sender_id)
                 since = float(old.get("last_message_ts") or 0.0) if old else 0.0
-                new_msgs = db_source.fetch_messages_since(db, stat.sender_id, since)
+                watermark = self._mark_watermark(stat.sender_id)
+                if watermark > 0:
+                    # 只推理「标记之后」的新消息
+                    new_msgs = db_source.fetch_messages_after_id(db, stat.sender_id, watermark)
+                else:
+                    # 第一次：按时间增量取，推完立刻打上 id 水位
+                    new_msgs = db_source.fetch_messages_since(db, stat.sender_id, since)
                 contents = [m.content for m in new_msgs if (m.content or "").strip()]
                 if len(contents) < self.min_daily_messages:
                     continue
-                data = await self._infer(stat.sender_name, contents)
+                prior = self._prior_text(old)
+                data = await self._infer(stat.sender_name, contents, prior)
                 self.store.save(stat.sender_id, self._merge(old, stat, data, len(contents)))
+                max_id = max((int(getattr(m, "id", 0) or 0) for m in new_msgs), default=0)
+                self._mark_analyzed(stat.sender_id, max_id, len(contents))
+                self._save_marks()
+                logger.info(
+                    f"[affect_core] {stat.sender_name} 推理 {len(contents)} 条（id≤{max_id} 已标记，下次不再推）"
+                )
                 done += 1
                 await asyncio.sleep(1.0)
             self._rounds += 1
@@ -900,7 +1084,87 @@ class AffectCore(Star):
             self._write_snapshot(force=True)
         finally:
             self._busy = False
+            try:
+                await self._release_local_compute()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[affect_core] 释放本地算力失败: {exc}")
         return done
+
+    # ------------------------------------------------------------ 本地算力
+    async def _release_local_compute(self) -> None:
+        """情感推理结束后把本地算力收掉：先卸载模型，必要时再停 Ollama 进程。"""
+        if not self.release_after_infer:
+            return
+        ok = await asyncio.to_thread(analyzer.unload_model, self.ollama_url, self.model)
+        left = await asyncio.to_thread(analyzer.running_models, self.ollama_url)
+        left_text = "、".join(left) if left else "无"
+        if ok:
+            logger.info(
+                f"[affect_core] 本地算力已释放：卸载 {self.model}（仍驻留：{left_text}）"
+            )
+        else:
+            logger.warning(f"[affect_core] 卸载 {self.model} 没有成功，Ollama 可能没在跑")
+        if self.release_mode != "stop":
+            return
+        if left:
+            logger.info(f"[affect_core] 还有模型驻留（{left_text}），先不动 Ollama 进程")
+            return
+        await self._stop_ollama()
+
+    async def _stop_ollama(self) -> None:
+        """结束 Ollama 进程（只在本机、且显存已经空了的时候做）。"""
+        import subprocess
+
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                ["taskkill", "/IM", "ollama.exe", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+            if proc.returncode == 0:
+                logger.info(f"[affect_core] 已结束 Ollama 进程：{out[:120]}")
+            else:
+                logger.info(f"[affect_core] 没有可结束的 Ollama 进程：{out[:120]}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[affect_core] 结束 Ollama 失败: {exc}")
+
+    async def _ensure_ollama(self) -> bool:
+        """release_mode=stop 时，推理前把 Ollama 拉起来（没配 exe 就跳过）。"""
+        if await asyncio.to_thread(analyzer.running_models, self.ollama_url):
+            return True
+        if not self.ollama_exe:
+            logger.warning(
+                "[affect_core] Ollama 不在跑，且没有配置 ollama_exe，无法自动拉起"
+            )
+            return False
+        import subprocess
+
+        env = dict(os.environ)
+        if self.ollama_model_dir:
+            env["OLLAMA_MODELS"] = self.ollama_model_dir
+        try:
+            await asyncio.to_thread(
+                subprocess.Popen,
+                [self.ollama_exe, "serve"],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[affect_core] 拉起 Ollama 失败: {exc}")
+            return False
+        for _ in range(20):
+            await asyncio.sleep(1.0)
+            if await asyncio.to_thread(analyzer.running_models, self.ollama_url):
+                return True
+            if await asyncio.to_thread(analyzer.list_models, self.ollama_url, 2.0):
+                return True
+        logger.warning("[affect_core] 拉起 Ollama 超时")
+        return False
 
     # ------------------------------------------------------------ 消息与门控
 
@@ -986,6 +1250,20 @@ class AffectCore(Star):
             return True, "带问号、又提到你"
         return False, ""
 
+    def _is_tired(self) -> bool:
+        """此刻是否累了：八维疲劳为正，或情绪落在疲惫类。"""
+        try:
+            dims = ((self._view() or {}).get("mood") or {}).get("dims") or {}
+            if float(dims.get("fatigue", 0.0) or 0.0) > self.group_tired_fatigue:
+                return True
+        except Exception:
+            pass
+        try:
+            emo = str((self.state.get("last_card") or {}).get("emotion") or "")
+        except Exception:
+            emo = ""
+        return any(k in emo for k in ("疲惫", "困", "累", "倦", "睡"))
+
     def _group_speak_allowed(self, text: str, energy: float) -> tuple[bool, str]:
         """没被点名的群消息：值不值得主动接这一句。"""
         now = datetime.now()
@@ -996,11 +1274,17 @@ class AffectCore(Star):
         ):
             self._group_hits.append(time.time())
             return True, "话里提到我"
-        cutoff = time.time() - 300
-        self._group_hits = [t for t in self._group_hits if t >= cutoff]
-        if len(self._group_hits) >= self.group_max_per_window:
-            return False, f"5 分钟内已主动接了 {len(self._group_hits)} 次"
-        rate = self.group_reply_rate * float(self.energy.rate(energy))
+        # 分档概率：能量只决定「多愿意开口」，不再叠加第二层惩罚，也不设条数上限
+        if energy < 20:
+            rate = self.group_rate_low
+        elif energy < 40:
+            rate = self.group_rate_mid
+        elif energy < 70:
+            rate = self.group_rate_high_mid
+        else:
+            rate = self.group_rate_high
+        if self.group_tired_factor < 1.0 and self._is_tired():
+            rate *= self.group_tired_factor
         if rate <= 0.0:
             return False, f"能量 {energy:.0f}%，不接"
         if random.random() < rate:
@@ -1114,6 +1398,16 @@ class AffectCore(Star):
     def _insulted(self, event: AstrMessageEvent, text: str) -> bool:
         return bool(self._insult_verdict(event, text)["insult"])
 
+    def _mark_burst(self, kind: str, strength: float = 1.0) -> None:
+        """明确的事件（被骂/被夸/求陪成真）直接算突变，不走慢平滑。"""
+        if not self.burst_enabled:
+            return
+        self.state["emotion_burst"] = {
+            "kind": kind,
+            "ts": time.time(),
+            "strength": max(0.0, min(1.0, float(strength))),
+        }
+
     def _negative_trigger(self, text: str) -> None:
         levels = self.state.setdefault("h", {})
         bumps = {
@@ -1129,6 +1423,7 @@ class AffectCore(Star):
             levels[name] = max(0.0, min(1.0, float(levels.get(name, 0.5)) + delta))
         self.state["negative_until"] = time.time() + random.uniform(15, 35) * 60
         self.state["ts"] = 0.0
+        self._mark_burst("insult", 1.0)
 
     def _targets_self_or_owner(self, event: AstrMessageEvent) -> bool:
         try:
@@ -1156,6 +1451,7 @@ class AffectCore(Star):
 
         qq = str(self.state.get("active_qq") or "")
         kind = "insult" if insulted_now else "praise"
+        self._mark_burst(kind, 0.9)
         hab = self.state.setdefault("habituation", {})
         key = f"{qq}:{kind}"
         count = int(hab.get(key, 0))
@@ -1229,6 +1525,8 @@ class AffectCore(Star):
         view = self._view()
         dims = view["dims"]
         emotion = view["emotion"]
+        emo_detail = self.mood.emotion_detail(dims)
+        emotion_text = self.mood.emotion_text(dims)
         traits = view["traits"]
         social = view["social"]
         _, _, energy = self._energy_now()
@@ -1247,7 +1545,7 @@ class AffectCore(Star):
         parts = [
             "",
             "【状态｜优先于人格卡同名特质】",
-            f"能量{energy:.0f}%({self.energy.tier(energy)})｜心情{emotion}",
+            f"能量{energy:.0f}%({self.energy.tier(energy)})｜心情{emotion_text}｜基调{emo_detail.get('mood') or ''}",
             "八维 " + " ".join(f"{DIM_SHORT[k]}{dims[k]:+.2f}" for k in DIM_LABELS),
             "性格 " + " ".join(
                 f"{TRAIT_LABELS[k]}{value:.2f}" for k, value in trait_items
@@ -1272,8 +1570,21 @@ class AffectCore(Star):
         hint = EMOTIONS.get(emotion, ("",))[5] if emotion in EMOTIONS else ""
         if hint:
             parts.append(f"感觉 {hint}")
+        level = str(emo_detail.get("level") or "")
+        if level == "强":
+            parts.append("这会儿情绪挺明显，别压着，也别放大。")
+        elif level == "轻":
+            parts.append("这会儿情绪很淡，别演得很满。")
         if insulted and self.retaliate_enabled:
             parts.append("被骂了：可以一句短促带刺地怼回去，别攻击家人，一两句就够。")
+        comfort_until = float(self.state.get("comfort_open_until", 0.0) or 0.0)
+        if comfort_until > time.time():
+            mins = int((comfort_until - time.time()) / 60)
+            parts.append(
+                f"刚才（{mins} 分钟内）是你自己开口说「能陪我说说话吗」，对方应了。"
+                "这一段别用「累」「你去忙吧」把话关掉：先接住对方，至少聊两三轮再提睡觉；"
+                "累可以说，但别拿它结束对话。"
+            )
 
         card = "\n".join(parts) + "\n"
         try:
@@ -1302,6 +1613,13 @@ class AffectCore(Star):
             return f"当前是「{emotion}」，不需要求安慰"
         now = time.time()
         if not force:
+            energy = self._energy_now()[2]
+            if energy < self.comfort_min_energy:
+                return (
+                    f"能量只有 {energy:.0f}%，太累了，先不找人说话"
+                    "（这时候开了口也只会把人推走）"
+                )
+        if not force:
             last = float(self.state.get("last_comfort_ts", 0.0) or 0.0)
             if now - last < self.comfort_cooldown:
                 return f"刚找过，还要等 {int((self.comfort_cooldown - (now - last)) / 60)} 分钟"
@@ -1310,7 +1628,7 @@ class AffectCore(Star):
         if not target:
             return "没找到可以找的人（没有可用会话）"
         qq, who, session = target
-        text = self.comfort_message or f"今天有点{emotion}……能陪我说说话吗？"
+        text = self.comfort_message or self._comfort_text(emotion, who)
         text = text.replace("{emotion}", emotion).replace("{name}", who)
         try:
             sent = await self.context.send_message(
@@ -1322,8 +1640,24 @@ class AffectCore(Star):
             return f"没发出去（{who} 的会话可能已失效）"
         self.state["last_comfort_ts"] = now
         self.state["last_comfort_to"] = qq
+        # 开一个「求陪窗口」：这段时间里别用累把对方推开
+        self.state["comfort_open_until"] = now + self.comfort_window
+        self.state["comfort_open_to"] = qq
         self._save_state()
         return f"已向 {who}（{qq}）发出求安慰消息"
+
+    def _comfort_text(self, emotion: str, who: str) -> str:
+        """按情绪挑一句自己的说法，避开上次用过的那句。"""
+        pool = COMFORT_LINES.get(emotion) or COMFORT_LINES["_default"]
+        last = str(self.state.get("last_comfort_text") or "")
+        choices = [t for t in pool if t != last] or list(pool)
+        text = random.choice(choices)
+        hour = datetime.now().hour
+        if (hour >= 23 or hour < 6) and "睡" not in text:
+            text = f"{text}（这会儿还没睡）"
+        text = text.replace("{name}", who)
+        self.state["last_comfort_text"] = text
+        return text
 
     def _pick_comfort_target(self) -> tuple[str, str, str] | None:
         def session_of(qq: str) -> tuple[str, str] | None:
@@ -1735,6 +2069,7 @@ class AffectCore(Star):
         return {
             "mood": {
                 "emotion": emotion,
+                "emotion_text": self.mood.emotion_text(dims),
                 "dims": dims,
                 "dim_labels": DIM_LABELS,
                 "traits": traits,
@@ -1752,6 +2087,13 @@ class AffectCore(Star):
                 "sleep_debt": round(float(self.state.get("sleep_debt", 0.0)), 1),
             },
             "social": view["social"],
+            "comfort": {
+                "open": float(self.state.get("comfort_open_until", 0.0) or 0.0)
+                > time.time(),
+                "until": float(self.state.get("comfort_open_until", 0.0) or 0.0),
+                "to": str(self.state.get("comfort_open_to") or ""),
+                "min_energy": self.comfort_min_energy,
+            },
             "gate": {
                 "enabled": bool(self.gate_enabled),
                 "thinking_min": int(self.thinking_min),

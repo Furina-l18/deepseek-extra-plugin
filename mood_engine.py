@@ -141,6 +141,7 @@ class MoodEngine:
         self.state = state
         self.noise_scale = float(cfg.get("noise_scale", 1.0))
         self.jitter = float(cfg.get("emotion_jitter", 0.18))
+        self.random_event_enabled = bool(cfg.get("random_event_enabled", False))
         self.daily_bias_sigma = float(cfg.get("daily_bias_sigma", 0.10))
         self.mood_bias_sigma = float(cfg.get("mood_bias_sigma", 0.15))
         self.coupling_scale = float(cfg.get("coupling_scale", 1.0))
@@ -165,6 +166,17 @@ class MoodEngine:
             key: float(cfg.get("base_" + key, value))
             for key, value in DEFAULT_BASE_TRAITS.items()
         }
+        # 情绪调控：迟滞、强度、混合、余味
+        self.switch_margin = float(cfg.get("emotion_switch_margin", 0.18))
+        self.dwell_seconds = max(0, int(cfg.get("emotion_dwell_seconds", 120)))
+        self.blend_gap = float(cfg.get("emotion_blend_gap", 0.30))
+        self.aftertaste_minutes = max(0, int(cfg.get("emotion_aftertaste_minutes", 12)))
+        self.smooth_seconds = max(1.0, float(cfg.get("emotion_smooth_seconds", 60)))
+        self.mood_seconds = max(300.0, float(cfg.get("mood_smooth_seconds", 2400)))
+        self.ramp_seconds = max(0.0, float(cfg.get("emotion_ramp_seconds", 90)))
+        self.burst_threshold = max(0.05, float(cfg.get("emotion_burst_threshold", 0.35)))
+        self.burst_seconds = max(0.0, float(cfg.get("emotion_burst_seconds", 25)))
+        self.emotion_jitter_floor = float(cfg.get("emotion_jitter_floor", 0.05))
         # 情绪黏性：八维变化不大时沿用上一次结果，避免每帧抖动
         self._last_dims: dict | None = None
         self._last_emotion: str = ""
@@ -178,6 +190,17 @@ class MoodEngine:
 
     def day_params(self) -> dict:
         return self.state.get("day_params") or {}
+
+    def circadian(self, name: str, hour: float) -> float:
+        """一天里这个时刻「本该有」的水平：只有昼夜形状，不含事件与偏置。"""
+        spec = HORMONES[name]
+        dp = self.day_params().get(name) or {}
+        peak = float(dp.get("peak", spec["peak"]))
+        width = float(dp.get("width", spec["width"]))
+        scale = float(dp.get("scale", 1.0))
+        d = ((hour - peak + 12.0) % 24.0) - 12.0
+        bump = math.exp(-(d * d) / (2.0 * width * width))
+        return spec["mean"] + spec["amp"] * scale * bump
 
     def baseline(self, name: str, hour: float) -> float:
         spec = HORMONES[name]
@@ -194,19 +217,100 @@ class MoodEngine:
             value += self.coupling_scale * weight * (float(levels.get(other, 0.5)) - 0.5)
         return max(0.0, min(1.0, value))
 
-    def new_day(self, today: str) -> None:
+    @staticmethod
+    def _dead(v: float, floor: float = 0.015, cap: float = 0.08) -> float:
+        """给每天的起点偏置设一个死区：证据太薄就当 0，别凭空给方向。"""
+        v = float(v)
+        if abs(v) < floor:
+            return 0.0
+        return max(-cap, min(cap, v))
+
+    def derive_day(self, evidence: dict | None = None) -> tuple[dict, dict, list]:
+        """每天起点只由证据推出来；没有证据就全是 0（中性）。"""
+        ev = evidence or {}
+        hb = {name: 0.0 for name in HORMONES}
+        db = {dim: 0.0 for dim in DIM_LABELS}
+        why: list[str] = []
+
+        debt = float(ev.get("sleep_debt") or self.state.get("sleep_debt") or 0.0)
+        if debt >= 6.0:
+            hb["melatonin"] += 0.05
+            hb["cortisol"] += 0.03
+            hb["dopamine"] -= 0.03
+            db["fatigue"] += 0.06
+            db["arousal"] -= 0.04
+            why.append(f"睡眠债 {debt:.1f} 小时 → 困、唤醒低")
+
+        sent = ev.get("sentiment")
+        samples = int(ev.get("samples") or 0)
+        if sent is not None and samples >= 5:
+            if sent >= 0.20:
+                hb["oxytocin"] += 0.04
+                hb["serotonin"] += 0.03
+                db["affiliation"] += 0.05
+                db["valence"] += 0.03
+                why.append(f"最近和对面相处 {sent:+.2f}（{samples} 条）→ 亲近、血清素偏高")
+            elif sent <= -0.20:
+                hb["cortisol"] += 0.04
+                hb["serotonin"] -= 0.03
+                db["valence"] -= 0.04
+                db["tension"] += 0.04
+                why.append(f"最近和对面相处 {sent:+.2f}（{samples} 条）→ 绷着、愉悦偏低")
+
+        days = ev.get("days_since_active")
+        if days is not None and float(days) >= 3.0:
+            hb["oxytocin"] -= 0.03
+            db["affiliation"] -= 0.04
+            why.append(f"{float(days):.0f} 天没人说话 → 亲近感偏低")
+
+        neg_until = float(self.state.get("negative_until") or 0.0)
+        if neg_until > time.time():
+            hb["cortisol"] += 0.04
+            hb["serotonin"] -= 0.03
+            db["valence"] -= 0.04
+            db["tension"] += 0.04
+            why.append("昨天那次不愉快还没走完 → 皮质醇偏高")
+
+        app = self.state.get("last_appraisal") or {}
+        if app and str(app.get("kind")) == "praise":
+            if time.time() - float(app.get("ts") or 0.0) < 86400:
+                hb["dopamine"] += 0.03
+                db["valence"] += 0.03
+                why.append("24 小时内被夸过 → 多巴胺偏高")
+
+        hb = {name: self._dead(v) for name, v in hb.items()}
+        db = {dim: self._dead(v, 0.02, 0.10) for dim, v in db.items()}
+        return hb, db, why
+
+    def new_day(self, today: str, evidence: dict | None = None) -> None:
+        # 昼夜形状是生理，不是情绪：固定用配置里的中点，不再随机抖动
         params = {}
         for name, spec in HORMONES.items():
             params[name] = {
-                "peak": spec["peak"] + random.uniform(-self.peak_jitter, self.peak_jitter),
-                "width": random.uniform(self.width_min, self.width_max),
-                "scale": random.uniform(self.amp_min, self.amp_max),
+                "peak": spec["peak"],
+                "width": (self.width_min + self.width_max) / 2.0,
+                "scale": (self.amp_min + self.amp_max) / 2.0,
             }
-        bias = {name: random.gauss(0.0, self.daily_bias_sigma) for name in HORMONES}
+        ev = evidence
+        if ev is None and callable(getattr(self, "evidence_provider", None)):
+            try:
+                ev = self.evidence_provider()
+            except Exception:  # noqa: BLE001
+                ev = None
+        bias, mood_bias, why = self.derive_day(ev)
         keep = {
             key: self.state.get(key)
-            for key in ("last_card", "card_count", "last_comfort_ts", "active_qq")
-            if self.state.get(key)
+            for key in (
+                "last_card",
+                "card_count",
+                "last_comfort_ts",
+                "active_qq",
+                "profiles_meta",
+                "sleep_debt",
+                "last_appraisal",
+                "negative_until",
+            )
+            if self.state.get(key) is not None
         }
         self.state.clear()
         self.state.update(
@@ -215,9 +319,8 @@ class MoodEngine:
                 "ts": time.time(),
                 "bias": bias,
                 "day_params": params,
-                "mood_bias": {
-                    dim: random.gauss(0.0, self.mood_bias_sigma) for dim in DIM_LABELS
-                },
+                "mood_bias": mood_bias,
+                "mood_reasons": why,
                 "next_event_ts": time.time()
                 + random.uniform(
                     self.event_min_minutes * 60, self.event_max_minutes * 60
@@ -229,8 +332,10 @@ class MoodEngine:
         self.state.update(keep)
 
     def _random_event(self, levels: dict) -> None:
-        for name in random.sample(list(HORMONES), random.randint(1, 3)):
-            delta = random.uniform(0.04, 0.12) * random.choice((-1, 1))
+        if not self.random_event_enabled:
+            return
+        for name in random.sample(list(HORMONES), random.randint(1, 2)):
+            delta = random.uniform(0.03, 0.07) * random.choice((-1, 1))
             levels[name] = max(0.0, min(1.0, float(levels.get(name, 0.5)) + delta))
 
     def step(self, dt_hours: float, energy: float | None, neuro: dict) -> None:
@@ -291,10 +396,12 @@ class MoodEngine:
 
     def dims(self, social: dict | None = None, social_weight: float = 1.0) -> dict:
         h = self.state.get("h") or {}
+        hour = self.hour_now()
         out = {}
         for dim, weights in DIMS.items():
+            # 情绪只看「偏离此刻应有水平」的部分：几点钟本身不该算情绪
             raw = sum(
-                w * (float(h.get(name, HORMONES[name]["mean"])) - HORMONES[name]["mean"])
+                w * (float(h.get(name, HORMONES[name]["mean"])) - self.circadian(name, hour))
                 for name, w in weights.items()
             )
             out[dim] = max(
@@ -326,35 +433,223 @@ class MoodEngine:
             out["certainty"] = max(-1.0, min(1.0, out["certainty"] - 0.08 * k))
         return out
 
-    def emotion(self, dims: dict | None = None) -> str:
-        dims = dims or self.dims()
-        if self._last_dims is not None and self._last_emotion:
-            drift = sum(abs(dims[k] - self._last_dims[k]) for k in DIM_LABELS)
-            if drift < 0.08:
-                return self._last_emotion
-        active = time.time() < float(self.state.get("negative_until", 0.0))
-        neg_bonus = self.negative_bonus + (
-            0.35 * self.negative_sensitivity if active else 0.0
-        )
-        best_name, best_score = "平静", -1e9
+    @staticmethod
+    def _proto_dims(proto: tuple) -> tuple:
+        v, a, d, af, c = proto[:5]
+        tension = max(-1.0, min(1.0, 0.70 * a - 0.60 * v))
+        fatigue = max(-1.0, min(1.0, -0.80 * a - 0.20 * v))
+        immersion = max(-1.0, min(1.0, 0.50 * a + 0.30 * c - 0.10 * abs(v)))
+        return (v, a, d, af, c, tension, fatigue, immersion)
+
+    @staticmethod
+    def _vec(dims: dict) -> list:
+        return [float(dims.get(k, 0.0)) for k in DIM_LABELS]
+
+    @staticmethod
+    def _dot(x: list, y: list) -> float:
+        return sum(a * b for a, b in zip(x, y))
+
+    @staticmethod
+    def _norm(x: list) -> float:
+        return math.sqrt(sum(a * a for a in x))
+
+    def _rank(self, vec: list) -> list:
+        """按方向相似度排序（余弦），返回 [(cos, name, |proto|)]。"""
+        out = []
+        nv = self._norm(vec) or 1e-6
         for name, proto in EMOTIONS.items():
-            v, a, d, af, c = proto[:5]
-            tension = max(-1.0, min(1.0, 0.70 * a - 0.60 * v))
-            fatigue = max(-1.0, min(1.0, -0.80 * a - 0.20 * v))
-            immersion = max(-1.0, min(1.0, 0.50 * a + 0.30 * c - 0.10 * abs(v)))
-            proto_dims = (v, a, d, af, c, tension, fatigue, immersion)
-            dist = sum(
-                (dims[dim] - proto_dims[i]) ** 2
-                for i, dim in enumerate(DIM_LABELS)
-            )
-            score = -dist / 0.55 + random.gauss(0.0, self.jitter)
-            if name in NEGATIVE_EMOTIONS:
-                score += neg_bonus
-            if score > best_score:
-                best_name, best_score = name, score
+            pv = list(self._proto_dims(proto))
+            npv = self._norm(pv) or 1e-6
+            cos = self._dot(vec, pv) / (nv * npv)
+            out.append((cos, name, npv))
+        out.sort(key=lambda x: -x[0])
+        return out
+
+    @staticmethod
+    def _level(intensity: float) -> str:
+        if intensity >= 0.72:
+            return "强"
+        if intensity >= 0.42:
+            return "中"
+        return "轻"
+
+    def _ema(self, key: str, vec: list, now: float, tau: float, boost: float = 0.0) -> list:
+        """把八维按时间常数做指数平滑；状态驱动得慢，社交冲击过得快。"""
+        prev = self.state.get(key)
+        prev_ts = self.state.get(key + "_ts")
+        if not prev or not prev_ts:
+            self.state[key] = list(vec)
+            self.state[key + "_ts"] = now
+            return list(vec)
+        dt = max(0.0, now - float(prev_ts))
+        alpha = 1.0 - math.exp(-dt / max(1.0, tau))
+        # 变化越猛，越允许它快一点过去；但仍然不是瞬移
+        if boost:
+            shock = sum(abs(float(v) - float(p)) for p, v in zip(prev, vec)) / len(vec)
+            alpha = min(1.0, alpha + boost * min(1.0, shock / 0.5))
+        out = [float(p) + (float(v) - float(p)) * alpha for p, v in zip(prev, vec)]
+        self.state[key] = out
+        self.state[key + "_ts"] = now
+        return out
+
+    def affect_vec(self, dims: dict | None = None) -> tuple:
+        """返回（当下, 基调, 是否突变）：慢事件平滑走，突变直接过，基调始终慢。"""
+        dims = dims or self.dims()
+        now = time.time()
+        raw = self._vec(dims)
+        prev_raw = self.state.get("dims_raw")
+        prev_ts = float(self.state.get("dims_raw_ts") or 0.0)
+        shock = 0.0
+        if prev_raw and prev_ts:
+            dt = max(0.0, now - prev_ts)
+            # 取单维最大跳变：八维平均会把「一句话被狠狠戳到」稀释掉
+            gap = max(abs(float(v) - float(p)) for p, v in zip(prev_raw, raw))
+            # 短时间内的大跳才算冲击；慢慢漂出来的不算
+            shock = gap if dt <= 90 else gap * (90.0 / dt)
+        self.state["dims_raw"] = list(raw)
+        self.state["dims_raw_ts"] = now
+
+        burst = shock >= self.burst_threshold
+        if burst:
+            # 记下来，接下来这段时间（默认 25 秒）都算突变，别第二句又滑回去
+            self.state["emotion_burst"] = {"kind": "shock", "ts": now, "strength": min(1.0, shock)}
+        marker = self.state.get("emotion_burst") or {}
+        if marker and (now - float(marker.get("ts") or 0.0)) <= self.burst_seconds:
+            burst = True
+
+        if burst:
+            fast = list(raw)          # 突变不走平滑，该跳就跳
+        else:
+            fast = self._ema("dims_fast", raw, now, self.smooth_seconds, boost=0.35)
+        slow = self._ema("dims_mood", raw, now, self.mood_seconds, boost=0.04)
+        mixed = [0.65 * f + 0.35 * s for f, s in zip(fast, slow)]
+        return mixed, slow, burst
+
+    def mood_text(self, dims: dict | None = None) -> str:
+        """慢层基调：不跟着一句话跳，用来描述「最近这段时间」。"""
+        dims = dims or self.dims()
+        _, slow, _burst = self.affect_vec(dims)
+        v, a, d, af, c = slow[0], slow[1], slow[2], slow[3], slow[4]
+        ten, fat = slow[5], slow[6]
+        if fat > 0.35:
+            return "有点乏"
+        if ten > 0.35 and v < -0.15:
+            return "绷着"
+        if v > 0.30 and a > 0.15:
+            return "偏亮"
+        if v > 0.20:
+            return "偏暖"
+        if v < -0.30:
+            return "偏沉"
+        if af > 0.30:
+            return "想亲近"
+        if c < -0.20:
+            return "有点没底"
+        return "平稳"
+
+    def emotion_detail(self, dims: dict | None = None) -> dict:
+        """主情绪 + 强度 + 等级 + 次情绪 + 过渡/余味；快慢两层平滑，不一句话跳脸。"""
+        dims = dims or self.dims()
+        vec, slow, burst = self.affect_vec(dims)
+        magnitude = self._norm(vec)
+        now = time.time()
+
+        if magnitude < 0.22:
+            ranked = [(1.0, "平静", 0.5)]
+            best, best_cos, second, second_cos = "平静", 1.0, "", -1.0
+        else:
+            ranked = self._rank(vec)
+            best_cos, best = ranked[0][0], ranked[0][1]
+            second_cos, second = (ranked[1][0], ranked[1][1]) if len(ranked) > 1 else (-1.0, "")
+
+        prev = str(self.state.get("emotion_now") or "")
+        since = float(self.state.get("emotion_since") or 0.0)
+        if prev and prev != best and prev in EMOTIONS and magnitude >= 0.22 and not burst:
+            prev_cos = dict((n, c) for c, n, _ in ranked).get(prev, -1.0)
+            if (prev_cos - best_cos) > -0.10 and (now - since) < self.dwell_seconds:
+                best, second = prev, (best if second_cos < best_cos else second)
+
+        cos_fit = max(0.0, min(1.0, (best_cos + 1.0) / 2.0))
+        intensity = max(0.0, min(1.0, (magnitude / 1.25) * (0.45 + 0.55 * cos_fit)))
+        if best == "平静" and magnitude < 0.22:
+            intensity = min(intensity, 0.35)
+        if burst:
+            intensity = max(0.0, min(1.0, intensity * 1.15))
+
+        # 换情绪：记一条过渡，强度先低后高，别瞬移
+        trans = self.state.get("emotion_transition") or {}
+        if prev and prev != best and prev in EMOTIONS:
+            self.state["emotion_aftertaste"] = {
+                "name": prev,
+                "ts": now,
+                "intensity": float((self.state.get("emotion_aftertaste") or {}).get("intensity") or intensity),
+            }
+            self.state["emotion_transition"] = {"from": prev, "to": best, "ts": now}
+            self.state["emotion_since"] = now
+            trans = self.state["emotion_transition"]
+        self.state["emotion_now"] = best
+        if not self.state.get("emotion_since"):
+            self.state["emotion_since"] = now
+
+        progress = 1.0
+        if trans and str(trans.get("to")) == best and self.ramp_seconds > 0 and not burst:
+            progress = max(0.0, min(1.0, (now - float(trans.get("ts") or 0.0)) / self.ramp_seconds))
+            intensity *= 0.55 + 0.45 * progress
+
+        after = self.state.get("emotion_aftertaste") or {}
+        aftertaste, after_strength = "", 0.0
+        if after and self.aftertaste_minutes:
+            age = now - float(after.get("ts") or 0.0)
+            ttl = self.aftertaste_minutes * 60.0
+            if 0 <= age < ttl and str(after.get("name")) in EMOTIONS and str(after.get("name")) != best:
+                aftertaste = str(after.get("name"))
+                after_strength = max(0.0, 1.0 - age / ttl)
+
+        compound = ""
+        if second and second != best and magnitude >= 0.30:
+            if (best_cos - second_cos) < self.blend_gap:
+                compound = second
+
         self._last_dims = dict(dims)
-        self._last_emotion = best_name
-        return best_name
+        self._last_emotion = best
+        return {
+            "name": best,
+            "intensity": intensity,
+            "level": self._level(intensity),
+            "second": compound,
+            "aftertaste": aftertaste,
+            "aftertaste_strength": after_strength,
+            "transition_from": str(trans.get("from") or "") if progress < 1.0 else "",
+            "burst": burst,
+            "transition_progress": progress,
+            "magnitude": magnitude,
+            "mood": self.mood_text(dims),
+            "since": float(self.state.get("emotion_since") or now),
+        }
+
+    def emotion(self, dims: dict | None = None) -> str:
+        """兼容旧接口：只返回主情绪名。"""
+        return str(self.emotion_detail(dims)["name"])
+
+    def emotion_text(self, dims: dict | None = None) -> str:
+        """给注入用的一句话：从委屈往平静走（中），余味：害怕"""
+        d = self.emotion_detail(dims)
+        src = str(d.get("transition_from") or "")
+        if d.get("burst"):
+            text = f"突然{d['name']}（{d['level']}"
+            if d["second"]:
+                text += f"，带点{d['second']}"
+            return text + "）"
+        if src and d.get("transition_progress", 1.0) < 1.0:
+            text = f"正从{src}往{d['name']}走（{d['level']}"
+        else:
+            text = f"{d['name']}（{d['level']}"
+        if d["second"]:
+            text += f"，带点{d['second']}"
+        text += "）"
+        if d["aftertaste"] and not src:
+            text += f"，余味：{d['aftertaste']}"
+        return text
 
     def traits(self, dims: dict) -> dict:
         v = dims["valence"]

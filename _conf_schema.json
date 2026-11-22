@@ -334,5 +334,170 @@
     "type": "bool",
     "default": true,
     "hint": "开启后：昨天那次整夜没跑成（关机/不在线/插件停用），今天第一个 tick 就补做一次，不再干等下一个固定时间。"
+  },
+  "group_quiet_start": {
+    "type": "string",
+    "default": "00:00",
+    "description": "这个时间点之后不再主动接群聊的话"
+  },
+  "group_quiet_end": {
+    "type": "string",
+    "default": "07:30",
+    "description": "这个时间点之前不主动接群聊的话；到这里恢复"
+  },
+  "group_mention_boost": {
+    "type": "bool",
+    "default": true,
+    "description": "话里提到「鲸屿/屿屿/大肥鱼」时直接接，不吃概率"
+  },
+  "release_after_infer": {
+    "description": "推理后释放本地算力",
+    "type": "bool",
+    "default": true,
+    "hint": "每天那次情感推理一结束就把模型从显存里卸掉（keep_alive=0），省出显存给别的东西；关掉则模型会按 30 分钟驻留。"
+  },
+  "release_mode": {
+    "description": "释放强度",
+    "type": "string",
+    "default": "unload",
+    "hint": "unload = 只卸载模型、Ollama 进程留着；stop = 卸载后连 ollama.exe 一起结束（下次推理前会自动拉起，需要填 ollama_exe）。"
+  },
+  "ollama_exe": {
+    "description": "Ollama 可执行文件路径",
+    "type": "string",
+    "default": "",
+    "hint": "只在 release_mode=stop 时需要，用于下次推理前把 Ollama 拉起来；例如 E:\\deepseek\\ollama.exe。"
+  },
+  "ollama_model_dir": {
+    "description": "Ollama 模型目录",
+    "type": "string",
+    "default": "",
+    "hint": "拉起 Ollama 时作为 OLLAMA_MODELS 环境变量传进去；留空则用系统默认。"
+  },
+  "group_rate_low": {
+    "type": "float",
+    "default": 0.048,
+    "description": "能量 <20% 时，未点名的群消息主动接话概率"
+  },
+  "group_rate_mid": {
+    "type": "float",
+    "default": 0.082,
+    "description": "能量 20–40% 时的接话概率"
+  },
+  "group_rate_high_mid": {
+    "type": "float",
+    "default": 0.136,
+    "description": "能量 40–70% 时的接话概率"
+  },
+  "group_rate_high": {
+    "type": "float",
+    "default": 0.168,
+    "description": "能量 ≥70% 时的接话概率"
+  },
+  "group_tired_factor": {
+    "type": "float",
+    "default": 0.08,
+    "description": "判定为累（疲劳为正或情绪疲惫）时，概率再乘这个系数，几乎不接"
+  },
+  "group_tired_fatigue": {
+    "type": "float",
+    "default": 0.25,
+    "description": "八维「疲劳」超过这个值就算累"
+  },
+  "comfort_min_energy": {
+    "type": "float",
+    "default": 12.0,
+    "description": "求安慰的最低能量（%）",
+    "hint": "低于这个能量就不主动求陪：太累时开了口，回复又会用「累」把对方推回去，自相矛盾。"
+  },
+  "comfort_window_minutes": {
+    "type": "int",
+    "default": 45,
+    "description": "求安慰后的「求陪窗口」（分钟）",
+    "hint": "求陪成功后这段时间里，状态注入会提示「别用累把话关掉」，先接住对方再谈睡觉。"
+  },
+  "emotion_switch_margin": {
+    "type": "float",
+    "default": 0.18,
+    "min": 0.0,
+    "max": 1.0,
+    "description": "情绪切换迟滞",
+    "hint": "新情绪要比旧的高出这么多才换，防止一句话就跳脸"
+  },
+  "emotion_dwell_seconds": {
+    "type": "int",
+    "default": 120,
+    "min": 0,
+    "max": 3600,
+    "description": "情绪最短停留（秒）",
+    "hint": "换情绪后至少停这么久，除非变化很大"
+  },
+  "emotion_blend_gap": {
+    "type": "float",
+    "default": 0.3,
+    "min": 0.0,
+    "max": 2.0,
+    "description": "混合情绪阈值",
+    "hint": "第二接近的情绪差这么近就写成『委屈，带点生气』"
+  },
+  "emotion_aftertaste_minutes": {
+    "type": "int",
+    "default": 12,
+    "min": 0,
+    "max": 180,
+    "description": "情绪余味（分钟）",
+    "hint": "换情绪后旧情绪还挂一会儿，注入里写『余味』"
+  },
+  "emotion_smooth_seconds": {
+    "type": "int",
+    "default": 60,
+    "min": 5,
+    "max": 3600,
+    "description": "当下情绪的平滑时间常数（秒）",
+    "hint": "越大越慢热；冲击会临时加速，不会瞬移"
+  },
+  "mood_smooth_seconds": {
+    "type": "int",
+    "default": 2400,
+    "min": 300,
+    "max": 43200,
+    "description": "心情基调的平滑时间常数（秒）",
+    "hint": "基调是这几个小时的整体颜色，不跟着单句跳"
+  },
+  "emotion_ramp_seconds": {
+    "type": "int",
+    "default": 90,
+    "min": 0,
+    "max": 900,
+    "description": "情绪强度爬升时长（秒）",
+    "hint": "换情绪后强度先低后高，避免一下子很满"
+  },
+  "emotion_burst_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "突变区分",
+    "hint": "被骂/被夸这类明确事件瞬间反应；慢慢漂出来的情绪仍然平滑"
+  },
+  "emotion_burst_threshold": {
+    "type": "float",
+    "default": 0.35,
+    "min": 0.05,
+    "max": 2.0,
+    "description": "自动判定突变的变化量阈值",
+    "hint": "八维平均跳变超过它就当突变处理"
+  },
+  "emotion_burst_seconds": {
+    "type": "int",
+    "default": 25,
+    "min": 0,
+    "max": 300,
+    "description": "突变标记有效期（秒）",
+    "hint": "这段时间内允许情绪直接切过去"
+  },
+  "random_event_enabled": {
+    "type": "bool",
+    "default": false,
+    "description": "随机激素波动",
+    "hint": "默认关闭：没有外部事件时不该凭空冒出情绪。打开只是加一点点生理波动（±0.03~0.07）"
   }
 }
